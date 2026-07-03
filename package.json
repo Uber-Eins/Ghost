@@ -1,0 +1,20 @@
+{
+  "name": "ghost-privacy-extension",
+  "version": "0.1.0",
+  "description": "A Chromium/Helium privacy extension that gives each site a stable browser profile.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:lite": "node scripts/build.mjs lite",
+    "build:advanced": "node scripts/build.mjs advanced",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:lite && node --test tests/*.test.mjs",
+    "verify": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.315",
+    "@types/node": "^24.0.10",
+    "esbuild": "^0.25.6",
+    "typescript": "^5.8.3"
+  }
+}

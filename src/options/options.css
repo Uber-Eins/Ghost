@@ -1,0 +1,249 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  color: #1f2937;
+  background: #f8fafc;
+}
+
+main {
+  width: min(1100px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 28px 0 48px;
+}
+
+header,
+footer,
+.header-actions,
+.section-heading,
+.form-row,
+.inline,
+.chips {
+  display: flex;
+  align-items: center;
+}
+
+header {
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 28px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+p,
+.notice,
+#status {
+  color: #64748b;
+}
+
+section {
+  margin: 18px 0;
+  padding: 18px 0;
+  border-top: 1px solid #e2e8f0;
+}
+
+button,
+input,
+select,
+textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  min-height: 36px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #f1f5f9;
+}
+
+input,
+select,
+textarea {
+  padding: 8px;
+}
+
+.header-actions,
+.section-heading,
+.form-row,
+footer {
+  gap: 10px;
+}
+
+.section-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+footer {
+  position: sticky;
+  bottom: 0;
+  justify-content: flex-start;
+  padding: 12px 0;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+#save {
+  width: 160px;
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.profile-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.profile-card label {
+  display: grid;
+  gap: 4px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.profile-card input,
+.profile-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  color: #1f2937;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #ffffff;
+}
+
+th,
+td {
+  padding: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+th {
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.chips {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.chip button {
+  min-height: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+}
+
+.inline {
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 720px) {
+  header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-actions button {
+    flex: 1;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  body,
+  footer {
+    color: #e5e7eb;
+    background: #111827;
+  }
+
+  section,
+  footer,
+  th,
+  td {
+    border-color: #334155;
+  }
+
+  button,
+  input,
+  select,
+  textarea,
+  table,
+  .profile-card,
+  .chip {
+    border-color: #334155;
+    background: #0f172a;
+    color: #e5e7eb;
+  }
+
+  button:hover {
+    background: #1e293b;
+  }
+
+  #save {
+    background: #e5e7eb;
+    color: #0f172a;
+  }
+
+  p,
+  .notice,
+  #status,
+  th,
+  .profile-card label {
+    color: #94a3b8;
+  }
+}

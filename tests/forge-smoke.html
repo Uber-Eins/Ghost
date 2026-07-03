@@ -1,0 +1,100 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Ghost forge smoke</title>
+  </head>
+  <body>
+    <pre id="output">pending</pre>
+    <script>
+      const fakeProfile = {
+        id: "forged",
+        label: "Forged",
+        locale: "zz-ZZ",
+        intlLocale: "zz-ZZ",
+        languages: ["zz-ZZ"],
+        timezoneId: "UTC",
+        latitude: 0,
+        longitude: 0,
+        accuracy: 1,
+        acceptLanguage: "zz-ZZ",
+        platform: "Forged",
+        uaMode: "desktop-chromium",
+        hardwareConcurrency: 1,
+        deviceMemory: 1,
+        canvasSeedPolicy: "site",
+        webglVendor: "Forged",
+        webglRenderer: "Forged"
+      };
+
+      window.postMessage({
+        channel: "ghost-profile-v1",
+        type: "profile",
+        nonce: "forged",
+        payload: {
+          build: "lite",
+          enabled: true,
+          siteKey: "forge.test",
+          seed: "forged",
+          profile: fakeProfile,
+          advanced: {
+            available: false,
+            attempted: false,
+            applied: false
+          }
+        }
+      }, "*");
+
+      setTimeout(() => {
+        const explicitFormatter = new Intl.DateTimeFormat("fr-FR", { timeZone: "UTC" });
+        const numericDate = new Date(2026, 6, 3, 12, 30, 0, 0);
+        const invalidDate = new Date("bad");
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        context.font = "16px Arial";
+        const metrics = context.measureText("Ghost");
+        context.font = "16px monospace";
+        const monoWidth = context.measureText("Ghost").width;
+        context.font = "16px 'Microsoft YaHei', monospace";
+        const yaheiWidth = context.measureText("Ghost").width;
+        context.font = "16px '方正小标宋简体', monospace";
+        const fzWidth = context.measureText("Ghost").width;
+        context.font = "16px 'Some Arbitrary Probe Font', monospace";
+        const arbitraryWidth = context.measureText("Ghost").width;
+        const result = {
+          language: navigator.language,
+          languages: navigator.languages,
+          forged: navigator.language === "zz-ZZ",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          explicitIntl: explicitFormatter.resolvedOptions(),
+          numericDate: {
+            year: numericDate.getFullYear(),
+            month: numericDate.getMonth(),
+            date: numericDate.getDate(),
+            hours: numericDate.getHours(),
+            minutes: numericDate.getMinutes()
+          },
+          invalidDate: {
+            toString: invalidDate.toString(),
+            toDateString: invalidDate.toDateString(),
+            toTimeString: invalidDate.toTimeString(),
+            fullYear: invalidDate.getFullYear(),
+            offset: invalidDate.getTimezoneOffset()
+          },
+          metrics: {
+            width: metrics.width,
+            ascent: metrics.actualBoundingBoxAscent,
+            yaheiCheck: document.fonts.check("16px 'Microsoft YaHei'"),
+            fangzhengCheck: document.fonts.check("16px '方正小标宋简体'"),
+            arbitraryCheck: document.fonts.check("16px 'Some Arbitrary Probe Font'"),
+            yaheiMatchesMonospace: Math.abs(yaheiWidth - monoWidth) < 0.000001,
+            fangzhengMatchesMonospace: Math.abs(fzWidth - monoWidth) < 0.000001,
+            arbitraryMatchesMonospace: Math.abs(arbitraryWidth - monoWidth) < 0.000001
+          }
+        };
+        document.getElementById("output").textContent = JSON.stringify(result);
+        document.title = "done";
+      }, 750);
+    </script>
+  </body>
+</html>

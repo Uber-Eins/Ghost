@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ghost Fingerprint Test</title>
+    <link rel="stylesheet" href="fingerprint.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 data-i18n="fingerprintTest">Fingerprint Test</h1>
+        <button id="refresh" type="button" data-i18n="refresh">Refresh</button>
+      </header>
+      <pre id="output"></pre>
+      <canvas id="canvas" width="420" height="120"></canvas>
+    </main>
+    <script src="content-bridge.js"></script>
+    <script src="page-main.js"></script>
+    <script src="fingerprint.js"></script>
+  </body>
+</html>

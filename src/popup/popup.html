@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ghost</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Ghost</h1>
+        <span id="build"></span>
+      </header>
+
+      <section class="status">
+        <label class="row">
+          <span data-i18n="globalProtection">Global protection</span>
+          <input id="globalEnabled" type="checkbox">
+        </label>
+        <label class="row">
+          <span data-i18n="thisSite">This site</span>
+          <input id="siteEnabled" type="checkbox">
+        </label>
+      </section>
+
+      <section>
+        <div class="label" data-i18n="site">Site</div>
+        <div id="site" class="mono">-</div>
+      </section>
+
+      <section>
+        <label class="label" for="profile" data-i18n="profile">Profile</label>
+        <select id="profile"></select>
+      </section>
+
+      <section class="profile">
+        <div id="profileLabel"></div>
+        <div id="profileDetails" class="muted"></div>
+      </section>
+
+      <div class="actions">
+        <button id="regenerate" type="button" data-i18n="regenerateProfile">Regenerate site profile</button>
+        <button id="disableHour" type="button" data-i18n="disableHour">Disable for 1 hour</button>
+      </div>
+
+      <footer>
+        <button id="options" type="button" data-i18n="options">Options</button>
+        <button id="test" type="button" data-i18n="fingerprintTest">Fingerprint test</button>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
