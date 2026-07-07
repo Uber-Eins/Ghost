@@ -1,4 +1,7 @@
-import { build } from "esbuild";
+import { build as esbuildBuild } from "esbuild";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { build as viteBuild } from "vite";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -33,7 +36,7 @@ async function buildTarget(target) {
     __GHOST_CHANNEL__: JSON.stringify(channel)
   };
 
-  await build({
+  await esbuildBuild({
     entryPoints: {
       background: path.join(root, "src/background/index.ts")
     },
@@ -51,18 +54,18 @@ async function buildTarget(target) {
     bundleIife("src/content/main.ts", "page-main.js", outdir, define),
     bundleIife("src/content/bridge.ts", "content-bridge.js", outdir, define),
     bundleIife("src/popup/popup.ts", "popup.js", outdir, define),
-    bundleIife("src/options/options.ts", "options.js", outdir, define),
     bundleIife("src/fingerprint/fingerprint.ts", "fingerprint.js", outdir, define),
     bundleEsm("src/test-api.ts", "test-api.js", outdir, define)
   ]);
 
+  await bundleOptionsPage(outdir, define);
+
   await Promise.all([
     cp(path.join(root, "src/popup/popup.html"), path.join(outdir, "popup.html")),
     cp(path.join(root, "src/popup/popup.css"), path.join(outdir, "popup.css")),
-    cp(path.join(root, "src/options/options.html"), path.join(outdir, "options.html")),
-    cp(path.join(root, "src/options/options.css"), path.join(outdir, "options.css")),
     cp(path.join(root, "src/fingerprint/fingerprint.html"), path.join(outdir, "fingerprint.html")),
-    cp(path.join(root, "src/fingerprint/fingerprint.css"), path.join(outdir, "fingerprint.css"))
+    cp(path.join(root, "src/fingerprint/fingerprint.css"), path.join(outdir, "fingerprint.css")),
+    cp(path.join(root, "src/_locales"), path.join(outdir, "_locales"), { recursive: true })
   ]);
 
   await writeFile(path.join(outdir, "manifest.json"), JSON.stringify(manifest(target), null, 2));
@@ -70,7 +73,7 @@ async function buildTarget(target) {
 }
 
 function bundleIife(entry, outfile, outdir, define) {
-  return build({
+  return esbuildBuild({
     entryPoints: [path.join(root, entry)],
     outfile: path.join(outdir, outfile),
     bundle: true,
@@ -84,7 +87,7 @@ function bundleIife(entry, outfile, outdir, define) {
 }
 
 function bundleEsm(entry, outfile, outdir, define) {
-  return build({
+  return esbuildBuild({
     entryPoints: [path.join(root, entry)],
     outfile: path.join(outdir, outfile),
     bundle: true,
@@ -94,6 +97,35 @@ function bundleEsm(entry, outfile, outdir, define) {
     sourcemap: true,
     define,
     logLevel: "info"
+  });
+}
+
+function bundleOptionsPage(outdir, define) {
+  return viteBuild({
+    root: path.join(root, "src/options"),
+    base: "./",
+    publicDir: false,
+    configFile: false,
+    plugins: [react(), tailwindcss()],
+    define,
+    resolve: {
+      alias: {
+        "@": path.join(root, "src")
+      }
+    },
+    build: {
+      outDir: outdir,
+      emptyOutDir: false,
+      sourcemap: true,
+      rollupOptions: {
+        input: path.join(root, "src/options/options.html"),
+        output: {
+          entryFileNames: "options.js",
+          chunkFileNames: "assets/[name]-[hash].js",
+          assetFileNames: "assets/[name]-[hash][extname]"
+        }
+      }
+    }
   });
 }
 
@@ -110,15 +142,16 @@ function manifest(target) {
 
   return {
     manifest_version: 3,
-    name: target === "advanced" ? "Ghost Privacy Advanced" : "Ghost Privacy Lite",
-    short_name: "Ghost",
+    name: target === "advanced" ? "__MSG_extensionNameAdvanced__" : "__MSG_extensionNameLite__",
+    short_name: "__MSG_extensionShortName__",
     version: "0.1.0",
-    description: "Stable per-site browser profiles for common JavaScript and header fingerprinting surfaces.",
+    description: "__MSG_extensionDescription__",
+    default_locale: "en",
     minimum_chrome_version: "116",
     permissions,
     host_permissions: ["http://*/*", "https://*/*"],
     action: {
-      default_title: "Ghost",
+      default_title: "__MSG_defaultTitle__",
       default_popup: "popup.html"
     },
     options_page: "options.html",

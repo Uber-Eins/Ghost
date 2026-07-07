@@ -1,7 +1,8 @@
-import { allProfiles, findProfile, stableProfileIdForSite } from "./profiles";
+import { allProfiles, findProfile, PRESET_PROFILE_IDS, stableProfileIdForSite } from "./profiles";
 import { isExcluded, siteKeyFromUrl } from "./site";
 import type { GhostSettings, Profile, ResolvedProfile, BuildTarget } from "./types";
 import { stableSeed } from "./hash";
+import { normalizeTimezoneId } from "./locations";
 
 export const STORAGE_KEY = "ghost.settings";
 
@@ -12,21 +13,29 @@ export const DEFAULT_SETTINGS: GhostSettings = {
   siteNonces: {},
   excludedDomains: [],
   temporaryDisabledUntil: null,
-  customProfiles: []
+  customProfiles: [],
+  hiddenPresetProfileIds: []
 };
 
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 export function normalizeSettings(input: unknown): GhostSettings {
   const candidate = typeof input === "object" && input !== null ? input as Partial<GhostSettings> : {};
+  const customProfiles = Array.isArray(candidate.customProfiles)
+    ? candidate.customProfiles.filter(isProfileLike).map(normalizeProfile)
+    : [];
+  const hiddenPresetProfileIds = normalizeHiddenPresetProfileIds(candidate.hiddenPresetProfileIds, customProfiles);
+  const siteNonces = normalizeNumberRecord(candidate.siteNonces);
+  const profiles = allProfiles(customProfiles, hiddenPresetProfileIds);
   return {
     enabled: candidate.enabled ?? DEFAULT_SETTINGS.enabled,
     advancedEnabled: candidate.advancedEnabled ?? DEFAULT_SETTINGS.advancedEnabled,
-    siteProfiles: normalizeRecord(candidate.siteProfiles),
-    siteNonces: normalizeNumberRecord(candidate.siteNonces),
+    siteProfiles: normalizeSiteProfiles(candidate.siteProfiles, profiles, siteNonces),
+    siteNonces,
     excludedDomains: Array.isArray(candidate.excludedDomains) ? candidate.excludedDomains.filter(isString) : [],
     temporaryDisabledUntil: typeof candidate.temporaryDisabledUntil === "number" ? candidate.temporaryDisabledUntil : null,
-    customProfiles: Array.isArray(candidate.customProfiles) ? candidate.customProfiles.filter(isProfileLike) : []
+    customProfiles,
+    hiddenPresetProfileIds
   };
 }
 
@@ -60,7 +69,7 @@ function enqueueSettingsWrite<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export function profilesFromSettings(settings: GhostSettings): Profile[] {
-  return allProfiles(settings.customProfiles);
+  return allProfiles(settings.customProfiles, settings.hiddenPresetProfileIds);
 }
 
 export function isTemporarilyDisabled(settings: GhostSettings, now = Date.now()): boolean {
@@ -91,7 +100,7 @@ export function resolveProfile(
 ): ResolvedProfile {
   const siteKey = siteKeyFromUrl(url);
   const profileId = ensureSiteAssignment(settings, siteKey);
-  const profile = findProfile(profileId, settings.customProfiles);
+  const profile = findProfile(profileId, settings.customProfiles, settings.hiddenPresetProfileIds);
   const temporarilyDisabled = isTemporarilyDisabled(settings, now);
   const excluded = isExcluded(siteKey, settings.excludedDomains);
   const enabled = settings.enabled && !temporarilyDisabled && !excluded;
@@ -111,13 +120,31 @@ export function resolveProfile(
   };
 }
 
-function normalizeRecord(value: unknown): Record<string, string> {
+function normalizeSiteProfiles(value: unknown, profiles: Profile[], siteNonces: Record<string, number>): Record<string, string> {
   if (typeof value !== "object" || value === null) {
     return {};
   }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).filter((entry): entry is [string, string] => isString(entry[0]) && isString(entry[1]))
-  );
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+  const entries: Array<[string, string]> = [];
+  for (const [siteKey, profileId] of Object.entries(value as Record<string, unknown>)) {
+    if (!isString(siteKey) || !isString(profileId)) {
+      continue;
+    }
+    entries.push([
+      siteKey,
+      profileIds.has(profileId)
+        ? profileId
+        : stableProfileIdForSite(siteKey, profiles, siteNonces[siteKey] ?? 0)
+    ]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function normalizeHiddenPresetProfileIds(value: unknown, customProfiles: Profile[]): string[] {
+  const hidden = Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === "string" && PRESET_PROFILE_IDS.has(entry)))]
+    : [];
+  return allProfiles(customProfiles, hidden).length > 0 ? hidden : [];
 }
 
 function normalizeNumberRecord(value: unknown): Record<string, number> {
@@ -131,6 +158,13 @@ function normalizeNumberRecord(value: unknown): Record<string, number> {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeProfile(profile: Profile): Profile {
+  return {
+    ...profile,
+    timezoneId: normalizeTimezoneId(profile.timezoneId)
+  };
 }
 
 function isProfileLike(value: unknown): value is Profile {

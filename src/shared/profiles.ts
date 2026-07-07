@@ -137,6 +137,8 @@ export const PRESET_PROFILES: Profile[] = [
   }
 ];
 
+export const PRESET_PROFILE_IDS = new Set(PRESET_PROFILES.map((profile) => profile.id));
+
 export function cloneProfile(profile: Profile): Profile {
   return {
     ...profile,
@@ -148,17 +150,20 @@ export function defaultProfiles(): Profile[] {
   return PRESET_PROFILES.map(cloneProfile);
 }
 
-export function allProfiles(customProfiles: Profile[]): Profile[] {
-  const profilesById = new Map(PRESET_PROFILES.map((profile) => [profile.id, cloneProfile(profile)]));
+export function allProfiles(customProfiles: Profile[], hiddenPresetProfileIds: string[] = []): Profile[] {
+  const hidden = new Set(hiddenPresetProfileIds);
+  const profilesById = new Map(PRESET_PROFILES
+    .filter((profile) => !hidden.has(profile.id))
+    .map((profile) => [profile.id, cloneProfile(profile)]));
   for (const profile of customProfiles) {
     profilesById.set(profile.id, cloneProfile(profile));
   }
   return [...profilesById.values()];
 }
 
-export function findProfile(profileId: string | undefined, customProfiles: Profile[]): Profile {
-  const profiles = allProfiles(customProfiles);
-  return cloneProfile(profiles.find((profile) => profile.id === profileId) ?? profiles[0]);
+export function findProfile(profileId: string | undefined, customProfiles: Profile[], hiddenPresetProfileIds: string[] = []): Profile {
+  const profiles = allProfiles(customProfiles, hiddenPresetProfileIds);
+  return cloneProfile(profiles.find((profile) => profile.id === profileId) ?? profiles[0] ?? PRESET_PROFILES[0]);
 }
 
 export function stableProfileIdForSite(siteKey: string, profiles: Profile[], nonce = 0): string {

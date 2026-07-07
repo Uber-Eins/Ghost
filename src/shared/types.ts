@@ -30,6 +30,7 @@ export interface GhostSettings {
   excludedDomains: string[];
   temporaryDisabledUntil: number | null;
   customProfiles: Profile[];
+  hiddenPresetProfileIds: string[];
 }
 
 export interface ResolvedProfile {

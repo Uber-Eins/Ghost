@@ -4,66 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Ghost Options</title>
-    <link rel="stylesheet" href="options.css">
+    <link rel="stylesheet" href="./options.css">
   </head>
   <body>
-    <main>
-      <header>
-        <div>
-          <h1 data-i18n="ghostOptions">Ghost Options</h1>
-          <p data-i18n="optionsSubtitle">Profiles, site rules, exclusions, and build behavior.</p>
-        </div>
-        <div class="header-actions">
-          <button id="fingerprint" type="button" data-i18n="fingerprintTest">Fingerprint test</button>
-          <button id="reset" type="button" data-i18n="reset">Reset</button>
-        </div>
-      </header>
-
-      <section>
-        <h2 data-i18n="build">Build</h2>
-        <div id="buildInfo" class="notice"></div>
-        <label class="inline">
-          <input id="advancedEnabled" type="checkbox">
-          <span data-i18n="advancedToggle">Use advanced CDP overrides when this build has the debugger permission</span>
-        </label>
-      </section>
-
-      <section>
-        <div class="section-heading">
-          <h2 data-i18n="profiles">Profiles</h2>
-          <button id="addProfile" type="button" data-i18n="addCustomProfile">Add custom profile</button>
-        </div>
-        <div id="profiles" class="grid"></div>
-      </section>
-
-      <section>
-        <h2 data-i18n="siteRules">Site Rules</h2>
-        <table>
-          <thead>
-            <tr>
-              <th data-i18n="site">Site</th>
-              <th data-i18n="profile">Profile</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="sites"></tbody>
-        </table>
-      </section>
-
-      <section>
-        <h2 data-i18n="excludedDomains">Excluded Domains</h2>
-        <form id="excludeForm" class="form-row">
-          <input id="excludeInput" type="text" placeholder="example.com">
-          <button type="submit" data-i18n="add">Add</button>
-        </form>
-        <div id="exclusions" class="chips"></div>
-      </section>
-
-      <footer>
-        <button id="save" type="button" data-i18n="saveChanges">Save changes</button>
-        <span id="status"></span>
-      </footer>
-    </main>
-    <script src="options.js"></script>
+    <div id="root"></div>
+    <script type="module" src="./options.tsx"></script>
   </body>
 </html>

@@ -99,7 +99,7 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
 async function handleResolveProfile(url: string, sender: chrome.runtime.MessageSender) {
   if (!isSupportedPageUrl(url)) {
     const settings = await loadSettings();
-    const profile = findProfile(undefined, settings.customProfiles);
+    const profile = findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
       build: __GHOST_BUILD__,
       enabled: false,
@@ -145,7 +145,7 @@ function shouldApplyTabWideOverrides(sender: chrome.runtime.MessageSender): send
 async function getPopupState(url: string): Promise<PopupState> {
   if (!isSupportedPageUrl(url)) {
     const settings = await loadSettings();
-    const profile = findProfile(undefined, settings.customProfiles);
+    const profile = findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
       build: __GHOST_BUILD__,
       settings,
@@ -163,7 +163,7 @@ async function getPopupState(url: string): Promise<PopupState> {
   });
   const siteKey = siteKeyFromUrl(url);
   const profileId = settings.siteProfiles[siteKey];
-  const profile = findProfile(profileId, settings.customProfiles);
+  const profile = findProfile(profileId, settings.customProfiles, settings.hiddenPresetProfileIds);
   return {
     build: __GHOST_BUILD__,
     settings,

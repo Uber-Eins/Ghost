@@ -12,9 +12,31 @@
     "verify": "npm run typecheck && npm test"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
     "@types/chrome": "^0.0.315",
     "@types/node": "^24.0.10",
-    "esbuild": "^0.25.6",
-    "typescript": "^5.8.3"
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "esbuild": "^0.28.1",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^5.8.3",
+    "vite": "^8.1.3"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.18",
+    "@radix-ui/react-label": "^2.1.11",
+    "@radix-ui/react-popover": "^1.1.18",
+    "@radix-ui/react-select": "^2.3.2",
+    "@radix-ui/react-separator": "^1.1.11",
+    "@radix-ui/react-slot": "^1.3.0",
+    "@radix-ui/react-switch": "^1.3.2",
+    "@radix-ui/react-tooltip": "^1.2.11",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tailwind-merge": "^3.6.0"
   }
 }

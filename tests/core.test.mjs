@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_SETTINGS,
+  LOCALE_PRESETS,
+  applyLocalePreset,
   PRESET_PROFILES,
+  SUPPORTED_TIMEZONES,
   canvasFontHasBlockedFamily,
   dateFromZonedLocalParts,
   getTimezoneOffsetMinutes,
@@ -10,6 +13,8 @@ import {
   isSupportedPageUrl,
   loadSettings,
   normalizeSettings,
+  normalizeTimezoneId,
+  profilesFromSettings,
   profileAllowsCjkFonts,
   resolveProfile,
   sanitizeCanvasFont,
@@ -103,6 +108,90 @@ test("resolveProfile respects global disable and exclusions", () => {
   const excluded = normalizeSettings({ ...DEFAULT_SETTINGS, excludedDomains: ["example.com"] });
   assert.equal(resolveProfile("https://sub.example.com", excluded, "lite").enabled, false);
   assert.equal(resolveProfile("https://sub.example.com", excluded, "lite").reason, "excluded-domain");
+});
+
+test("settings migration keeps profile visibility explicit", () => {
+  const legacy = normalizeSettings({
+    enabled: true,
+    advancedEnabled: true,
+    siteProfiles: {},
+    siteNonces: {},
+    excludedDomains: [],
+    temporaryDisabledUntil: null,
+    customProfiles: []
+  });
+  assert.deepEqual(legacy.hiddenPresetProfileIds, []);
+
+  const hidden = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    hiddenPresetProfileIds: ["los-angeles-en-us"],
+    siteProfiles: {
+      "hidden.example": "los-angeles-en-us",
+      "valid.example": "tokyo-ja-jp"
+    }
+  });
+  assert.equal(profilesFromSettings(hidden).some((profile) => profile.id === "los-angeles-en-us"), false);
+  assert.equal(
+    hidden.siteProfiles["hidden.example"],
+    stableProfileIdForSite("hidden.example", profilesFromSettings(hidden))
+  );
+  assert.equal(hidden.siteProfiles["valid.example"], "tokyo-ja-jp");
+
+  const missingCustom = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    siteProfiles: {
+      "custom.example": "deleted-custom"
+    },
+    siteNonces: {
+      "custom.example": 3
+    }
+  });
+  assert.equal(
+    missingCustom.siteProfiles["custom.example"],
+    stableProfileIdForSite("custom.example", profilesFromSettings(missingCustom), 3)
+  );
+});
+
+test("settings migration keeps custom timezones IANA-only", () => {
+  const custom = {
+    ...PRESET_PROFILES[0],
+    id: "custom-invalid-timezone",
+    timezoneId: "UTC"
+  };
+  const settings = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    customProfiles: [custom]
+  });
+  assert.equal(settings.customProfiles[0].timezoneId, "America/Los_Angeles");
+});
+
+test("timezone aliases normalize to browser-supported IDs", () => {
+  assert.equal(normalizeTimezoneId("Asia/Ho_Chi_Minh"), "Asia/Saigon");
+  assert.equal(normalizeTimezoneId("Asia/Kolkata"), "Asia/Calcutta");
+  assert.ok(SUPPORTED_TIMEZONES.includes("Asia/Saigon"));
+  assert.ok(SUPPORTED_TIMEZONES.includes("Asia/Calcutta"));
+});
+
+test("locale presets fill language and location fields", () => {
+  assert.ok(LOCALE_PRESETS.length >= 20);
+  const profile = applyLocalePreset(PRESET_PROFILES[0], "zh-CN");
+  assert.equal(profile.locale, "zh-CN");
+  assert.equal(profile.intlLocale, "zh-CN");
+  assert.deepEqual(profile.languages, ["zh-CN", "zh", "en-US", "en"]);
+  assert.equal(profile.acceptLanguage, "zh-CN,zh;q=0.9,en-US;q=0.7,en;q=0.6");
+  assert.equal(profile.timezoneId, "Asia/Shanghai");
+  assert.equal(profile.latitude, 39.9042);
+  assert.equal(profile.longitude, 116.4074);
+
+  const vietnam = applyLocalePreset(PRESET_PROFILES[0], "vi-VN");
+  assert.equal(vietnam.timezoneId, "Asia/Saigon");
+  assert.equal(vietnam.latitude, 10.8231);
+  assert.equal(vietnam.longitude, 106.6297);
+
+  const india = applyLocalePreset(PRESET_PROFILES[0], "en-IN");
+  assert.equal(india.timezoneId, "Asia/Calcutta");
+  assert.equal(india.latitude, 19.076);
+  assert.equal(india.longitude, 72.8777);
 });
 
 test("header rules honor temporary disable windows", () => {
