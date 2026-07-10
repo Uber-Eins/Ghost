@@ -5,8 +5,10 @@ import type { ResolvedProfile, RuntimeRequest, RuntimeResponse } from "../shared
 declare const __GHOST_CHANNEL__: string;
 
 let profilePort: MessagePort | null = null;
+let profileNonce: string | null = null;
+const initialPageUrl = currentGhostPageUrl();
 
-if (isSupportedPageUrl(location.href)) {
+if (initialPageUrl) {
   window.addEventListener("message", (event) => {
     const data = event.data as { channel?: string; type?: string; nonce?: string } | null;
     const port = event.ports?.[0];
@@ -14,36 +16,97 @@ if (isSupportedPageUrl(location.href)) {
       return;
     }
     if (profilePort) {
+      try {
+        port.close();
+      } catch {
+        // Ignore duplicate or page-forged connection attempts.
+      }
       return;
     }
 
     const nonce = data.nonce;
     profilePort = port;
+    profileNonce = nonce;
     const activePort = port;
     activePort.onmessage = (messageEvent) => {
-      const request = messageEvent.data as { channel?: string; type?: string; nonce?: string; url?: string } | null;
+      const request = messageEvent.data as { channel?: string; type?: string; nonce?: string; requestId?: number } | null;
       if (!request || request.channel !== __GHOST_CHANNEL__ || request.type !== "resolve" || request.nonce !== nonce) {
         return;
       }
-      void publishProfile(activePort, nonce, request.url ?? location.href);
+      void publishProfile(activePort, nonce, request.requestId);
+    };
+    activePort.onmessageerror = () => {
+      if (profilePort === activePort) {
+        profilePort = null;
+        profileNonce = null;
+      }
     };
     activePort.start();
+    activePort.postMessage({
+      channel: __GHOST_CHANNEL__,
+      type: "connected",
+      nonce
+    });
   });
 
-  document.documentElement?.setAttribute("data-ghost-site", siteKeyFromUrl(location.href));
+  chrome.runtime.onMessage.addListener((message: { channel?: string; type?: string }) => {
+    if (message.channel !== __GHOST_CHANNEL__ || message.type !== "refreshProfile" || !profilePort || !profileNonce) {
+      return;
+    }
+    try {
+      profilePort.postMessage({
+        channel: __GHOST_CHANNEL__,
+        type: "refresh",
+        nonce: profileNonce
+      });
+    } catch {
+      profilePort = null;
+      profileNonce = null;
+    }
+  });
+
+  document.documentElement?.setAttribute("data-ghost-site", siteKeyFromUrl(initialPageUrl));
 }
 
-async function publishProfile(port: MessagePort, nonce: string, url: string): Promise<void> {
-  const response = await sendMessage<ResolvedProfile>({ type: "resolveProfile", url });
-  if (!response) {
+async function publishProfile(port: MessagePort, nonce: string, requestId?: number): Promise<void> {
+  // The isolated-world location is authoritative. Never let MAIN-world page
+  // code select another URL and drive tab-wide DNR/debugger side effects.
+  const pageUrl = currentGhostPageUrl();
+  if (!pageUrl) {
     return;
   }
-  port.postMessage({
-    channel: __GHOST_CHANNEL__,
-    type: "profile",
-    nonce,
-    payload: response
-  });
+  const response = await sendMessage<ResolvedProfile>({ type: "resolveProfile", url: pageUrl });
+  if (!response || profilePort !== port || profileNonce !== nonce) {
+    return;
+  }
+  try {
+    port.postMessage({
+      channel: __GHOST_CHANNEL__,
+      type: "profile",
+      nonce,
+      requestId,
+      payload: response
+    });
+  } catch {
+    if (profilePort === port) {
+      profilePort = null;
+      profileNonce = null;
+    }
+  }
+}
+
+function currentGhostPageUrl(): string {
+  if (isSupportedPageUrl(location.href)) {
+    return location.href;
+  }
+  if (isSupportedPageUrl(document.referrer)) {
+    return document.referrer;
+  }
+  try {
+    return /^https?:\/\//.test(location.origin) ? `${location.origin}/` : "";
+  } catch {
+    return "";
+  }
 }
 
 function sendMessage<T>(message: RuntimeRequest): Promise<T | null> {

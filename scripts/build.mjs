@@ -6,8 +6,16 @@ import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
-const targets = parseTargets(process.argv.slice(2));
+const args = process.argv.slice(2);
+const includeTestApis = args.includes("--test");
+const targets = parseTargets(args.filter((arg) => arg !== "--test"));
 const channel = "ghost-profile-v1";
+const testOutdir = path.join(root, "dist", "test");
+
+if (includeTestApis) {
+  await rm(testOutdir, { recursive: true, force: true });
+  await mkdir(testOutdir, { recursive: true });
+}
 
 for (const target of targets) {
   await buildTarget(target);
@@ -44,27 +52,39 @@ async function buildTarget(target) {
     bundle: true,
     format: "esm",
     platform: "browser",
-    target: "chrome116",
+    target: "chrome120",
     sourcemap: true,
     define,
     logLevel: "info"
   });
 
-  await Promise.all([
-    bundleIife("src/content/main.ts", "page-main.js", outdir, define),
+  const scriptBundles = [
+    bundleIife("src/content/main.ts", "page-main.js", outdir, {
+      ...define,
+      __GHOST_RELATED_ONLY__: "false"
+    }),
+    bundleIife("src/content/main.ts", "page-related.js", outdir, {
+      ...define,
+      __GHOST_RELATED_ONLY__: "true"
+    }),
     bundleIife("src/content/bridge.ts", "content-bridge.js", outdir, define),
-    bundleIife("src/popup/popup.ts", "popup.js", outdir, define),
-    bundleIife("src/fingerprint/fingerprint.ts", "fingerprint.js", outdir, define),
-    bundleEsm("src/test-api.ts", "test-api.js", outdir, define)
-  ]);
+    bundleIife("src/popup/popup.ts", "popup.js", outdir, define)
+  ];
+  if (includeTestApis) {
+    scriptBundles.push(
+      bundleEsm("src/test-api.ts", "test-api.js", testOutdir, define),
+      bundleEsm("src/dnr-test-api.ts", "dnr-test-api.js", testOutdir, define),
+      bundleEsm("src/advanced-test-api.ts", "advanced-test-api.js", testOutdir, define)
+    );
+  }
+  await Promise.all(scriptBundles);
 
   await bundleOptionsPage(outdir, define);
 
   await Promise.all([
     cp(path.join(root, "src/popup/popup.html"), path.join(outdir, "popup.html")),
     cp(path.join(root, "src/popup/popup.css"), path.join(outdir, "popup.css")),
-    cp(path.join(root, "src/fingerprint/fingerprint.html"), path.join(outdir, "fingerprint.html")),
-    cp(path.join(root, "src/fingerprint/fingerprint.css"), path.join(outdir, "fingerprint.css")),
+    cp(path.join(root, "src/icons"), path.join(outdir, "icons"), { recursive: true }),
     cp(path.join(root, "src/_locales"), path.join(outdir, "_locales"), { recursive: true })
   ]);
 
@@ -79,7 +99,7 @@ function bundleIife(entry, outfile, outdir, define) {
     bundle: true,
     format: "iife",
     platform: "browser",
-    target: "chrome116",
+    target: "chrome120",
     sourcemap: true,
     define,
     logLevel: "info"
@@ -131,10 +151,12 @@ function bundleOptionsPage(outdir, define) {
 
 function manifest(target) {
   const permissions = [
-    "activeTab",
-    "declarativeNetRequest",
+    "alarms",
+    "declarativeNetRequestWithHostAccess",
+    "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "userScripts"
   ];
   if (target === "advanced") {
     permissions.push("debugger");
@@ -147,13 +169,15 @@ function manifest(target) {
     version: "0.1.0",
     description: "__MSG_extensionDescription__",
     default_locale: "en",
-    minimum_chrome_version: "116",
+    minimum_chrome_version: "120",
     permissions,
-    host_permissions: ["http://*/*", "https://*/*"],
+    host_permissions: ["http://*/*", "https://*/*", "file:///*"],
     action: {
       default_title: "__MSG_defaultTitle__",
-      default_popup: "popup.html"
+      default_popup: "popup.html",
+      default_icon: iconSet("enabled")
     },
+    icons: iconSet("enabled"),
     options_page: "options.html",
     background: {
       service_worker: "background.js",
@@ -161,29 +185,24 @@ function manifest(target) {
     },
     content_scripts: [
       {
-        matches: ["http://*/*", "https://*/*", "file://*/*"],
-        js: ["page-main.js"],
-        run_at: "document_start",
-        all_frames: true,
-        world: "MAIN"
-      },
-      {
-        matches: ["http://*/*", "https://*/*", "file://*/*"],
+        matches: ["http://*/*", "https://*/*", "file:///*"],
         js: ["content-bridge.js"],
         run_at: "document_start",
         all_frames: true,
-        world: "ISOLATED"
+        world: "ISOLATED",
+        match_about_blank: true,
+        match_origin_as_fallback: true
       }
-    ].reverse(),
-    web_accessible_resources: [
-      {
-        resources: ["fingerprint.html", "fingerprint.css", "fingerprint.js"],
-        matches: ["http://*/*", "https://*/*"]
-      }
-    ],
-    declarative_net_request: {
-      rule_resources: []
-    }
+    ]
+  };
+}
+
+function iconSet(state) {
+  return {
+    16: `icons/${state}-16.png`,
+    32: `icons/${state}-32.png`,
+    48: `icons/${state}-48.png`,
+    128: `icons/${state}-128.png`
   };
 }
 

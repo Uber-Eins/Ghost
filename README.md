@@ -4,7 +4,7 @@ Ghost is a Chromium/Helium extension that gives each site a stable privacy profi
 
 ## Builds
 
-- `lite`: no `debugger` permission. Uses early page-world JavaScript patches plus Declarative Net Request session rules for headers.
+- `lite`: no `debugger` permission. Uses early page-world JavaScript patches plus persistent and tab-scoped Declarative Net Request rules for headers.
 - `advanced`: includes the `debugger` permission and attempts Chrome DevTools Protocol environment overrides. If attach fails, it falls back to the lite behavior.
 
 Chromium does not allow the `debugger` permission to be optional, so the two builds are separate.
@@ -20,9 +20,11 @@ npm run verify
 
 Load `dist/lite` or `dist/advanced` as an unpacked extension in Chromium/Helium.
 
+For protection to be installed before page scripts run, enable **Allow User Scripts** in the extension's details (Chrome 138+) or Developer mode on older supported Chromium. Ghost shows a warning in the popup when it must use the asynchronous fallback.
+
 ## Scope
 
-Ghost targets common JavaScript and request-header fingerprinting. It does not claim to hide IP address, DNS,TLS/JA3, HTTP/2, GPU process, browser-kernel, or manual visual signals. Font and emoji rendering cannot be fully replaced from a normal extension; Ghost stabilizes JavaScript-visible canvas and text-measurement outputs instead.
+Ghost targets common JavaScript and request-header fingerprinting. It does not claim to hide IP address, DNS, TLS/JA3, HTTP/2, GPU process, browser-kernel, or manual visual signals. Font and emoji rendering cannot be fully replaced from a normal extension; Ghost stabilizes JavaScript-visible canvas and text-measurement outputs instead.
 
 ## TODO
 * 字体检测部分还需要进一步优化

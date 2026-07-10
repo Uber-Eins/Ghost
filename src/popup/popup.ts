@@ -1,4 +1,5 @@
 import { localizeDocument, t } from "../shared/i18n";
+import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
 import type { PopupState, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 const elements = {
@@ -17,7 +18,7 @@ const elements = {
 
 let currentState: PopupState | null = null;
 
-void initialize();
+void initialize().catch(showError);
 
 async function initialize(): Promise<void> {
   localizeDocument();
@@ -25,38 +26,53 @@ async function initialize(): Promise<void> {
   render();
 
   elements.globalEnabled.addEventListener("change", () => {
-    void sendMessage({ type: "setGlobalEnabled", enabled: elements.globalEnabled.checked }).then(refresh);
+    runMutation({ type: "setGlobalEnabled", enabled: elements.globalEnabled.checked });
   });
   elements.siteEnabled.addEventListener("change", () => {
     if (!currentState) {
       return;
     }
-    void sendMessage({ type: "setSiteEnabled", siteKey: currentState.siteKey, enabled: elements.siteEnabled.checked }).then(refresh);
+    runMutation({
+      type: "setSiteEnabled",
+      siteKey: currentState.siteKey,
+      url: currentState.url,
+      enabled: elements.siteEnabled.checked
+    });
   });
   elements.profile.addEventListener("change", () => {
     if (!currentState) {
       return;
     }
-    void sendMessage({ type: "setSiteProfile", siteKey: currentState.siteKey, profileId: elements.profile.value }).then(refresh);
+    runMutation({ type: "setSiteProfile", siteKey: currentState.siteKey, profileId: elements.profile.value });
   });
   elements.regenerate.addEventListener("click", () => {
     if (!currentState) {
       return;
     }
-    void sendMessage({ type: "regenerateSiteProfile", siteKey: currentState.siteKey }).then(refresh);
+    runMutation({ type: "regenerateSiteProfile", siteKey: currentState.siteKey });
   });
   elements.disableHour.addEventListener("click", () => {
-    void sendMessage({ type: "setTemporaryDisable", durationMs: 60 * 60 * 1000 }).then(refresh);
+    runMutation({ type: "setTemporaryDisable", durationMs: 60 * 60 * 1000 });
   });
   elements.options.addEventListener("click", () => chrome.runtime.openOptionsPage());
   elements.test.addEventListener("click", () => {
-    void chrome.tabs.create({ url: chrome.runtime.getURL("fingerprint.html") });
+    if (window.confirm(t("fingerprintTestExternalConfirm"))) {
+      void chrome.tabs.create({ url: FINGERPRINT_TEST_URL });
+    }
   });
 }
 
 async function refresh(): Promise<void> {
   currentState = await loadPopupState();
   render();
+}
+
+function runMutation(message: RuntimeRequest): void {
+  void sendMessage(message).then(refresh).catch(showError);
+}
+
+function showError(error: unknown): void {
+  elements.profileDetails.textContent = error instanceof Error ? error.message : String(error);
 }
 
 async function loadPopupState(): Promise<PopupState> {
@@ -69,7 +85,9 @@ function render(): void {
     return;
   }
 
-  elements.build.textContent = currentState.build;
+  elements.build.textContent = currentState.earlyBootstrapAvailable
+    ? currentState.build
+    : `${currentState.build} · ${t("earlyBootstrapUnavailable")}`;
   elements.globalEnabled.checked = currentState.settings.enabled;
   elements.siteEnabled.checked = currentState.enabledForSite;
   elements.site.textContent = currentState.siteKey || "-";
@@ -92,7 +110,9 @@ function renderProfile(profile: Profile): void {
   elements.profileLabel.textContent = profile.label;
   elements.profileDetails.textContent = currentState?.supportedPage
     ? `${profile.locale} | ${profile.timezoneId} | ${profile.latitude.toFixed(3)}, ${profile.longitude.toFixed(3)}`
-    : t("unsupportedPage");
+    : currentState?.fileAccessRequired
+      ? t("fileAccessRequired")
+      : t("unsupportedPage");
 }
 
 function sendMessage<T = unknown>(message: RuntimeRequest): Promise<T> {

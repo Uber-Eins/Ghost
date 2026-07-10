@@ -1,8 +1,8 @@
 import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
 import { isSupportedPageUrl } from "../shared/internal";
-import { fallbackProfileForSite, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
-import { siteKeyFromHostname } from "../shared/site";
+import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
+import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import {
   dateFromZonedLocalParts,
   formatSpoofedTimeString,
@@ -10,14 +10,18 @@ import {
   getTimezoneOffsetMinutes,
   getZonedParts
 } from "../shared/timezone";
-import type { Profile, ResolvedProfile } from "../shared/types";
+import { normalizeSettings, resolveProfile } from "../shared/storage";
+import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
+declare const __GHOST_BUILD__: BuildTarget;
+declare const __GHOST_RELATED_ONLY__: boolean;
 
 type NumericArray = Uint8Array<ArrayBufferLike> | Uint8ClampedArray<ArrayBufferLike> | Float32Array<ArrayBufferLike>;
 
 interface GhostState {
   enabled: boolean;
+  uaSpoofingEnabled: boolean;
   siteKey: string;
   seed: string;
   profile: Profile;
@@ -26,6 +30,35 @@ interface GhostState {
 interface IntlInstanceMetadata {
   locale?: string;
   timeZone?: string;
+}
+
+interface BootstrapPayload {
+  build?: BuildTarget;
+  settings?: GhostSettings;
+}
+
+interface GhostController {
+  readonly installed: true;
+}
+
+interface NavigatorDescriptorSnapshot {
+  owner: object;
+  descriptor: PropertyDescriptor;
+}
+
+const ghostGlobal = globalThis as typeof globalThis & {
+  __GHOST_BOOTSTRAP_SETTINGS__?: BootstrapPayload;
+  __GHOST_PAGE_CONTROLLER__?: GhostController;
+};
+
+ghostControllerInitialization: {
+if (__GHOST_RELATED_ONLY__ && isSupportedPageUrl(location.href)) {
+  break ghostControllerInitialization;
+}
+const existingController = ghostGlobal.__GHOST_PAGE_CONTROLLER__;
+const pendingBootstrap = takeBootstrapPayload();
+if (existingController) {
+  break ghostControllerInitialization;
 }
 
 const NativeDate = Date;
@@ -39,29 +72,85 @@ const NativeIntl = {
   DisplayNames: Intl.DisplayNames,
   Segmenter: Intl.Segmenter
 };
+const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
+  "language",
+  "languages",
+  "platform",
+  "vendor",
+  "userAgent",
+  "appVersion",
+  "userAgentData",
+  "hardwareConcurrency",
+  "deviceMemory"
+]);
 const nativeNavigator = snapshotNavigator();
 const nativeGeolocation = navigator.geolocation;
-const fallbackSiteKey = siteKeyFromHostname(location.hostname);
+const initialPageUrl = currentGhostPageUrl();
+const fallbackSiteKey = siteKeyFromUrl(initialPageUrl);
+const bootstrapProfile = pendingBootstrap ? resolveBootstrapPayload(pendingBootstrap) : null;
+const fallbackProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
+const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
+const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled ?? initialEnabled;
+const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
+const initialSeed = bootstrapProfile?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
 const state: GhostState = {
-  enabled: true,
-  siteKey: fallbackSiteKey,
-  profile: fallbackProfileForSite(fallbackSiteKey),
-  seed: stableSeed(fallbackSiteKey, fallbackProfileForSite(fallbackSiteKey).id)
+  enabled: initialEnabled,
+  uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
+  siteKey: initialSiteKey,
+  profile: fallbackProfile,
+  seed: initialSeed
 };
+const initialProfileSignature = profileSignature(fallbackProfile);
 const intlInstanceMetadata = new WeakMap<object, IntlInstanceMetadata>();
 const bridgeNonce = createNonce();
 let bridgePort: MessagePort | null = null;
+let bridgeConnected = false;
+let bridgeConnectAttempts = 0;
+const pendingBridgePorts = new Set<MessagePort>();
+let profileRequestSeq = 0;
+let latestProfileRequestId = 0;
+let hasResolvedProfile = bootstrapProfile !== null;
+let restoredPageNeedsReload = false;
+const reloadOnProfileChangeRequestIds = new Set<number>();
+let cachedUserAgentData: { key: string; value: object } | null = null;
+let cachedLanguages: { key: string; value: readonly string[] } | null = null;
 
-if (isSupportedPageUrl(location.href)) {
+Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
+  configurable: false,
+  enumerable: false,
+  writable: false,
+  value: Object.freeze({ installed: true as const })
+});
+
+if (initialPageUrl) {
   install();
   connectBridge();
 }
 
-function applyResolvedProfile(resolved: ResolvedProfile): void {
+function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
+  const shouldReload = reloadOnProfileChangeRequestIds.delete(requestId) && profileChanged(resolved);
   state.enabled = resolved.enabled;
+  state.uaSpoofingEnabled = resolved.uaSpoofingEnabled;
   state.siteKey = resolved.siteKey;
   state.profile = resolved.profile;
   state.seed = resolved.seed;
+  cachedUserAgentData = null;
+  cachedLanguages = null;
+  syncUserAgentDataDescriptor();
+  hasResolvedProfile = true;
+  if (shouldReload) {
+    location.reload();
+    return;
+  }
+  if (
+    initialEnabled !== resolved.enabled
+    || initialUserAgentSpoofingEnabled !== resolved.uaSpoofingEnabled
+    || initialSiteKey !== resolved.siteKey
+    || initialSeed !== resolved.seed
+    || initialProfileSignature !== profileSignature(resolved.profile)
+  ) {
+    restoredPageNeedsReload = true;
+  }
 }
 
 function install(): void {
@@ -81,27 +170,207 @@ function install(): void {
 }
 
 function connectBridge(): void {
+  installNavigationRefresh();
+  requestBridgeConnection();
+}
+
+function requestBridgeConnection(): void {
+  if (bridgeConnected) {
+    return;
+  }
+  bridgeConnectAttempts += 1;
   const channel = new MessageChannel();
-  bridgePort = channel.port1;
-  bridgePort.onmessage = (event) => {
-    const data = event.data as { channel?: string; type?: string; nonce?: string; payload?: unknown } | null;
-    if (!data || data.channel !== __GHOST_CHANNEL__ || data.type !== "profile" || data.nonce !== bridgeNonce) {
+  const activePort = channel.port1;
+  pendingBridgePorts.add(activePort);
+  activePort.onmessage = (event) => {
+    const data = event.data as { channel?: string; type?: string; nonce?: string; requestId?: number; payload?: unknown } | null;
+    if (!data || data.channel !== __GHOST_CHANNEL__ || data.nonce !== bridgeNonce) {
       return;
     }
-    applyResolvedProfile(data.payload as ResolvedProfile);
+    if (data.type === "connected") {
+      if (bridgeConnected) {
+        activePort.close();
+        pendingBridgePorts.delete(activePort);
+        return;
+      }
+      bridgeConnected = true;
+      bridgePort = activePort;
+      for (const pendingPort of pendingBridgePorts) {
+        if (pendingPort !== activePort) {
+          pendingPort.close();
+        }
+      }
+      pendingBridgePorts.clear();
+      requestResolvedProfile();
+      return;
+    }
+    if (activePort !== bridgePort) {
+      return;
+    }
+    if (data.type === "refresh") {
+      requestResolvedProfile(true);
+      return;
+    }
+    if (data.type !== "profile") {
+      return;
+    }
+    const requestId = typeof data.requestId === "number" ? data.requestId : 0;
+    if (requestId !== latestProfileRequestId) {
+      reloadOnProfileChangeRequestIds.delete(requestId);
+      return;
+    }
+    bridgeConnected = true;
+    bridgePort = activePort;
+    applyResolvedProfile(data.payload as ResolvedProfile, requestId);
   };
-  bridgePort.start();
+  activePort.start();
   window.postMessage({
     channel: __GHOST_CHANNEL__,
     type: "connect",
     nonce: bridgeNonce
   }, "*", [channel.port2]);
-  bridgePort.postMessage({
-    channel: __GHOST_CHANNEL__,
-    type: "resolve",
-    nonce: bridgeNonce,
-    url: location.href
+  if (!bridgeConnected && bridgeConnectAttempts < 8) {
+    const retryDelay = Math.min(1000, 25 * (2 ** (bridgeConnectAttempts - 1)));
+    window.setTimeout(() => {
+      if (!bridgeConnected) {
+        requestBridgeConnection();
+      }
+    }, retryDelay);
+  } else if (!bridgeConnected) {
+    window.setTimeout(() => {
+      if (!bridgeConnected) {
+        for (const pendingPort of pendingBridgePorts) {
+          pendingPort.close();
+        }
+        pendingBridgePorts.clear();
+      }
+    }, 1000);
+  }
+}
+
+function requestResolvedProfile(reloadOnProfileChange = false): void {
+  if (!bridgePort) {
+    return;
+  }
+  profileRequestSeq += 1;
+  const requestId = profileRequestSeq;
+  latestProfileRequestId = requestId;
+  reloadOnProfileChangeRequestIds.clear();
+  if (reloadOnProfileChange) {
+    reloadOnProfileChangeRequestIds.add(requestId);
+  }
+  try {
+    bridgePort?.postMessage({
+      channel: __GHOST_CHANNEL__,
+      type: "resolve",
+      nonce: bridgeNonce,
+      requestId
+    });
+  } catch {
+    bridgeConnected = false;
+    bridgePort = null;
+    requestBridgeConnection();
+  }
+}
+
+function installNavigationRefresh(): void {
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted && restoredPageNeedsReload) {
+      location.reload();
+      return;
+    }
+    requestResolvedProfile(true);
   });
+  window.addEventListener("popstate", () => requestResolvedProfile(true));
+  window.addEventListener("hashchange", () => requestResolvedProfile(true));
+  patchHistoryMethod("pushState");
+  patchHistoryMethod("replaceState");
+}
+
+function patchHistoryMethod(method: "pushState" | "replaceState"): void {
+  const native = history[method];
+  if (typeof native !== "function") {
+    return;
+  }
+  try {
+    Object.defineProperty(history, method, {
+      configurable: true,
+      writable: true,
+      value: function historyMethod(this: History, ...args: Parameters<History["pushState"]>) {
+        const result = native.apply(this, args);
+        queueMicrotask(() => requestResolvedProfile(true));
+        return result;
+      }
+    });
+  } catch {
+    // Some pages make history methods non-configurable.
+  }
+}
+
+function profileSignature(profile: Profile): string {
+  return JSON.stringify([
+    profile.id,
+    profile.locale,
+    profile.intlLocale,
+    profile.languages,
+    profile.timezoneId,
+    profile.latitude,
+    profile.longitude,
+    profile.accuracy,
+    profile.acceptLanguage,
+    profile.platform,
+    profile.architecture,
+    profile.userAgent,
+    profile.uaMode,
+    profile.hardwareConcurrency,
+    profile.deviceMemory,
+    profile.webglVendor,
+    profile.webglRenderer
+  ]);
+}
+
+function profileChanged(resolved: ResolvedProfile): boolean {
+  return hasResolvedProfile && (
+    state.enabled !== resolved.enabled
+    || state.uaSpoofingEnabled !== resolved.uaSpoofingEnabled
+    || state.siteKey !== resolved.siteKey
+    || state.seed !== resolved.seed
+    || profileSignature(state.profile) !== profileSignature(resolved.profile)
+  );
+}
+
+function takeBootstrapPayload(): BootstrapPayload | undefined {
+  const payload = ghostGlobal.__GHOST_BOOTSTRAP_SETTINGS__;
+  try {
+    delete ghostGlobal.__GHOST_BOOTSTRAP_SETTINGS__;
+  } catch {
+    ghostGlobal.__GHOST_BOOTSTRAP_SETTINGS__ = undefined;
+  }
+  return payload;
+}
+
+function resolveBootstrapPayload(payload: BootstrapPayload | undefined): ResolvedProfile | null {
+  const pageUrl = currentGhostPageUrl();
+  if (!payload?.settings || !pageUrl) {
+    return null;
+  }
+  const build = payload.build === "advanced" ? "advanced" : __GHOST_BUILD__;
+  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build);
+}
+
+function currentGhostPageUrl(): string {
+  if (isSupportedPageUrl(location.href)) {
+    return location.href;
+  }
+  if (isSupportedPageUrl(document.referrer)) {
+    return document.referrer;
+  }
+  try {
+    const origin = location.origin;
+    return /^https?:\/\//.test(origin) ? `${origin}/` : "";
+  } catch {
+    return "";
+  }
 }
 
 function snapshotNavigator(): Record<string, unknown> {
@@ -112,21 +381,64 @@ function snapshotNavigator(): Record<string, unknown> {
     platform: nav.platform,
     vendor: nav.vendor,
     userAgent: nav.userAgent,
+    appVersion: nav.appVersion,
     userAgentData: nav.userAgentData,
     hardwareConcurrency: nav.hardwareConcurrency,
     deviceMemory: nav.deviceMemory
   };
 }
 
+function snapshotNavigatorDescriptors(properties: string[]): Map<string, NavigatorDescriptorSnapshot> {
+  const descriptors = new Map<string, NavigatorDescriptorSnapshot>();
+  for (const property of properties) {
+    const owner = findDescriptorOwner(Navigator.prototype, property) ?? navigator;
+    const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+    if (descriptor) {
+      descriptors.set(property, { owner, descriptor });
+    }
+  }
+  return descriptors;
+}
+
+function readNativeNavigatorProperty(property: string): unknown {
+  const snapshot = nativeNavigatorDescriptors.get(property);
+  if (snapshot) {
+    if (typeof snapshot.descriptor.get === "function") {
+      try {
+        return snapshot.descriptor.get.call(navigator);
+      } catch {
+        return nativeNavigator[property];
+      }
+    }
+    if ("value" in snapshot.descriptor) {
+      return snapshot.descriptor.value;
+    }
+  }
+  return nativeNavigator[property];
+}
+
+function spoofingBaseUserAgentString(): string {
+  return String(nativeNavigator.userAgent ?? "");
+}
+
 function patchNavigator(): void {
-  defineNavigatorGetter("language", () => state.enabled ? state.profile.locale : nativeNavigator.language);
-  defineNavigatorGetter("languages", () => state.enabled ? [...state.profile.languages] : nativeNavigator.languages);
-  defineNavigatorGetter("platform", () => state.enabled ? state.profile.platform : nativeNavigator.platform);
-  defineNavigatorGetter("vendor", () => state.enabled ? "Google Inc." : nativeNavigator.vendor);
-  defineNavigatorGetter("userAgent", () => state.enabled ? userAgentForProfile(state.profile, String(nativeNavigator.userAgent ?? "")) : nativeNavigator.userAgent);
-  defineNavigatorGetter("hardwareConcurrency", () => state.enabled ? state.profile.hardwareConcurrency : nativeNavigator.hardwareConcurrency);
-  defineNavigatorGetter("deviceMemory", () => state.enabled ? state.profile.deviceMemory : nativeNavigator.deviceMemory);
-  defineNavigatorGetter("userAgentData", () => state.enabled ? buildUserAgentData() : nativeNavigator.userAgentData);
+  defineNavigatorGetter("language", () => state.enabled ? state.profile.locale : readNativeNavigatorProperty("language"));
+  defineNavigatorGetter("languages", () => state.enabled ? profileLanguages() : readNativeNavigatorProperty("languages"));
+  defineNavigatorGetter("platform", () => state.uaSpoofingEnabled ? navigatorPlatformForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("platform"));
+  defineNavigatorGetter("vendor", () => state.uaSpoofingEnabled ? navigatorVendorForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("vendor"));
+  defineNavigatorGetter("userAgent", () => state.uaSpoofingEnabled ? userAgentForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("userAgent"));
+  defineNavigatorGetter("appVersion", () => state.uaSpoofingEnabled ? appVersionForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("appVersion"));
+  defineNavigatorGetter("hardwareConcurrency", () => state.enabled ? state.profile.hardwareConcurrency : readNativeNavigatorProperty("hardwareConcurrency"));
+  defineNavigatorGetter("deviceMemory", () => state.enabled ? state.profile.deviceMemory : readNativeNavigatorProperty("deviceMemory"));
+  syncUserAgentDataDescriptor();
+}
+
+function profileLanguages(): readonly string[] {
+  const key = JSON.stringify(state.profile.languages);
+  if (cachedLanguages?.key !== key) {
+    cachedLanguages = { key, value: Object.freeze([...state.profile.languages]) };
+  }
+  return cachedLanguages.value;
 }
 
 function defineNavigatorGetter(property: string, getter: () => unknown): void {
@@ -150,32 +462,77 @@ function defineNavigatorGetter(property: string, getter: () => unknown): void {
   }
 }
 
-function buildUserAgentData(): object {
-  const metadata = userAgentMetadataForProfile(state.profile, String(nativeNavigator.userAgent ?? ""));
-  const brands = cloneJson(metadata.brands);
-  return Object.freeze({
+function syncUserAgentDataDescriptor(): void {
+  if (state.uaSpoofingEnabled && !userAgentMetadataForProfile(state.profile, spoofingBaseUserAgentString())) {
+    hideNavigatorProperty("userAgentData");
+    return;
+  }
+  defineNavigatorGetter("userAgentData", () => state.uaSpoofingEnabled ? buildUserAgentData() : readNativeNavigatorProperty("userAgentData"));
+}
+
+function hideNavigatorProperty(property: string): void {
+  const snapshot = nativeNavigatorDescriptors.get(property);
+  const owner = snapshot?.owner ?? findDescriptorOwner(Navigator.prototype, property) ?? Navigator.prototype;
+  try {
+    delete (navigator as unknown as Record<string, unknown>)[property];
+  } catch {
+    // Ignore locked instance properties.
+  }
+  let deleted = false;
+  try {
+    deleted = delete (owner as Record<string, unknown>)[property];
+  } catch {
+    deleted = false;
+  }
+  if (!deleted) {
+    try {
+      Object.defineProperty(owner, property, {
+        configurable: true,
+        enumerable: false,
+        get: () => undefined
+      });
+    } catch {
+      // Some Chromium builds keep selected navigator fields locked.
+    }
+  }
+}
+
+function buildUserAgentData(): object | undefined {
+  const metadata = userAgentMetadataForProfile(state.profile, spoofingBaseUserAgentString());
+  if (!metadata) {
+    return undefined;
+  }
+  const cacheKey = JSON.stringify([profileSignature(state.profile), spoofingBaseUserAgentString()]);
+  if (cachedUserAgentData?.key === cacheKey) {
+    return cachedUserAgentData.value;
+  }
+  const metadataRecord = metadata as unknown as Record<string, unknown>;
+  const brands = Object.freeze(metadata.brands.map((brand) => Object.freeze({ ...brand })));
+  const value = Object.freeze({
     brands,
-    mobile: false,
+    mobile: metadata.mobile,
     platform: metadata.platform,
     getHighEntropyValues: async (hints: string[]) => {
       const values: Record<string, unknown> = {
         brands: cloneJson(metadata.brands),
-        mobile: false,
+        mobile: metadata.mobile,
         platform: metadata.platform
       };
       for (const hint of hints) {
-        if (hint in metadata) {
-          values[hint] = cloneJson(metadata[hint]);
+        if (hint in metadataRecord) {
+          values[hint] = cloneJson(metadataRecord[hint]);
         }
       }
       return values;
     },
     toJSON: () => ({
       brands: cloneJson(metadata.brands),
-      mobile: false,
+      mobile: metadata.mobile,
       platform: metadata.platform
     })
   });
+  cachedUserAgentData = { key: cacheKey, value };
+  return value;
 }
 
 function patchIntl(): void {
@@ -259,6 +616,7 @@ function patchDate(): void {
   const nativeToLocaleString = NativeDate.prototype.toLocaleString;
   const nativeToLocaleDateString = NativeDate.prototype.toLocaleDateString;
   const nativeToLocaleTimeString = NativeDate.prototype.toLocaleTimeString;
+  const nativeGetYear = (NativeDate.prototype as Date & { getYear?: (this: Date) => number }).getYear;
   const nativeGetters = {
     getFullYear: NativeDate.prototype.getFullYear,
     getMonth: NativeDate.prototype.getMonth,
@@ -282,6 +640,17 @@ function patchDate(): void {
           return nativeGetTimezoneOffset.call(this);
         }
         return getTimezoneOffsetMinutes(dateFromThis(this), state.profile.timezoneId, NativeIntl.DateTimeFormat);
+      }
+    },
+    getYear: {
+      configurable: true,
+      value: function getYear(this: Date) {
+        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
+          return typeof nativeGetYear === "function"
+            ? nativeGetYear.call(this)
+            : nativeGetters.getFullYear.call(this) - 1900;
+        }
+        return getZonedParts(dateFromThis(this), state.profile.timezoneId, "en-US", NativeIntl.DateTimeFormat).year - 1900;
       }
     },
     getFullYear: { configurable: true, value: zonedGetter("year", nativeGetters.getFullYear) },
@@ -453,7 +822,7 @@ function timeZoneName(date: Date): string {
 }
 
 function patchGeolocation(): void {
-  const watchTimers = new Map<number, number>();
+  const watches = new Map<number, { nativeId?: number; timer?: number }>();
   let watchId = 1;
   const geolocation = {
     getCurrentPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
@@ -464,26 +833,30 @@ function patchGeolocation(): void {
       return undefined;
     },
     watchPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
-      if (!state.enabled && nativeGeolocation) {
-        return nativeGeolocation.watchPosition.call(nativeGeolocation, success, error, options);
-      }
       const id = watchId;
       watchId += 1;
+      if (!state.enabled && nativeGeolocation) {
+        const nativeId = nativeGeolocation.watchPosition.call(nativeGeolocation, success, error, options);
+        watches.set(id, { nativeId });
+        return id;
+      }
       queueMicrotask(() => success(buildPosition()));
       const timer = window.setInterval(() => success(buildPosition()), Math.max(options?.maximumAge ?? 30000, 1000));
-      watchTimers.set(id, timer);
+      watches.set(id, { timer });
       return id;
     },
     clearWatch(id: number) {
-      if (!state.enabled && nativeGeolocation) {
-        nativeGeolocation.clearWatch.call(nativeGeolocation, id);
+      const watch = watches.get(id);
+      if (!watch) {
         return;
       }
-      const timer = watchTimers.get(id);
-      if (timer !== undefined) {
-        window.clearInterval(timer);
-        watchTimers.delete(id);
+      if (watch.nativeId !== undefined && nativeGeolocation) {
+        nativeGeolocation.clearWatch.call(nativeGeolocation, watch.nativeId);
       }
+      if (watch.timer !== undefined) {
+        window.clearInterval(watch.timer);
+      }
+      watches.delete(id);
     }
   };
 
@@ -524,8 +897,8 @@ function buildPosition(): GeolocationPosition {
   const jitterLon = stableNumber(`${state.seed}:geo:lon`, -0.00015, 0.00015);
   return {
     coords: {
-      latitude: state.profile.latitude + jitterLat,
-      longitude: state.profile.longitude + jitterLon,
+      latitude: Math.max(-90, Math.min(90, state.profile.latitude + jitterLat)),
+      longitude: Math.max(-180, Math.min(180, state.profile.longitude + jitterLon)),
       accuracy: state.profile.accuracy,
       altitude: null,
       altitudeAccuracy: null,
@@ -846,4 +1219,5 @@ function createNonce(): string {
   const bytes = new Uint32Array(4);
   crypto.getRandomValues(bytes);
   return [...bytes].map((value) => value.toString(16).padStart(8, "0")).join("");
+}
 }

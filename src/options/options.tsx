@@ -24,6 +24,7 @@ import { Switch } from "./components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
 import { Textarea } from "./components/ui/textarea";
 import {
+  ARCHITECTURE_OPTIONS,
   applyLocalePreset,
   LOCALE_PRESETS,
   normalizeTimezoneId,
@@ -33,10 +34,11 @@ import {
   timezoneRegions,
   timezonesForRegion
 } from "../shared/locations";
+import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
-import { normalizeHostname } from "../shared/site";
-import { normalizeSettings } from "../shared/storage";
+import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
+import { normalizeSettings, profileIdForSiteKey, SETTINGS_LIMITS } from "../shared/storage";
 import type { GhostSettings, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 type ProfileDialogState = {
@@ -53,6 +55,7 @@ root.render(<OptionsApp />);
 function OptionsApp(): React.ReactElement {
   const [settings, setSettings] = React.useState<GhostSettings | null>(null);
   const [profileDialog, setProfileDialog] = React.useState<ProfileDialogState | null>(null);
+  const [siteRuleInput, setSiteRuleInput] = React.useState("");
   const [excludeInput, setExcludeInput] = React.useState("");
   const [status, setStatus] = React.useState("");
   const statusTimer = React.useRef<number | null>(null);
@@ -66,7 +69,9 @@ function OptionsApp(): React.ReactElement {
   React.useEffect(() => {
     localizeDocument();
     document.title = t("ghostOptions");
-    void sendMessage<GhostSettings>({ type: "options.getState" }).then((value) => setSettings(normalizeSettings(value)));
+    void sendMessage<GhostSettings>({ type: "options.getState" })
+      .then((value) => setSettings(normalizeSettings(value)))
+      .catch((error) => setStatus(errorText(error)));
   }, []);
 
   const flashStatus = React.useCallback((message: string) => {
@@ -98,6 +103,10 @@ function OptionsApp(): React.ReactElement {
   }, []);
 
   const saveProfileDraft = React.useCallback((profile: Profile) => {
+    if (settings && !settings.customProfiles.some((entry) => entry.id === profile.id) && settings.customProfiles.length >= SETTINGS_LIMITS.customProfiles) {
+      flashStatus(t("settingsLimitReached"));
+      return;
+    }
     updateSettings((current) => {
       const customProfiles = current.customProfiles.filter((entry) => entry.id !== profile.id);
       return {
@@ -108,7 +117,7 @@ function OptionsApp(): React.ReactElement {
     });
     setProfileDialog(null);
     flashStatus(t("profileSaved"));
-  }, [flashStatus, updateSettings]);
+  }, [flashStatus, settings, updateSettings]);
 
   const deleteProfile = React.useCallback((profile: Profile) => {
     if (profiles.length <= 1) {
@@ -132,21 +141,34 @@ function OptionsApp(): React.ReactElement {
     if (!settings) {
       return;
     }
-    const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
-    setSettings(normalizeSettings(saved));
-    flashStatus(t("saved"));
+    try {
+      const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
+      setSettings(normalizeSettings(saved));
+      flashStatus(t("saved"));
+    } catch (error) {
+      flashStatus(errorText(error));
+    }
   }, [flashStatus, settings]);
 
   const reset = React.useCallback(async () => {
-    const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
-    setSettings(normalizeSettings(resetSettings));
-    flashStatus(t("resetDone"));
+    try {
+      const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
+      setSettings(normalizeSettings(resetSettings));
+      flashStatus(t("resetDone"));
+    } catch (error) {
+      flashStatus(errorText(error));
+    }
   }, [flashStatus]);
 
   const addExclusion = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const domain = normalizeHostname(excludeInput);
+    const domain = normalizeExclusionRule(excludeInput);
     if (!domain) {
+      flashStatus(t("invalidExclusionRule"));
+      return;
+    }
+    if (!settings?.excludedDomains.includes(domain) && (settings?.excludedDomains.length ?? 0) >= SETTINGS_LIMITS.exclusionRules) {
+      flashStatus(t("settingsLimitReached"));
       return;
     }
     updateSettings((current) => ({
@@ -154,12 +176,38 @@ function OptionsApp(): React.ReactElement {
       excludedDomains: [...new Set([...current.excludedDomains, domain])]
     }));
     setExcludeInput("");
-  }, [excludeInput, updateSettings]);
+  }, [excludeInput, flashStatus, settings, updateSettings]);
+
+  const addSiteRule = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const siteRule = normalizeSiteRuleKey(siteRuleInput);
+    if (!siteRule) {
+      flashStatus(t("invalidSiteRule"));
+      return;
+    }
+    if (!settings?.siteProfiles[siteRule] && Object.keys(settings?.siteProfiles ?? {}).length >= SETTINGS_LIMITS.siteProfileRules) {
+      flashStatus(t("settingsLimitReached"));
+      return;
+    }
+    updateSettings((current) => {
+      const inheritedProfileId = profileIdForSiteKey(siteRule, current);
+      return {
+        ...current,
+        siteProfiles: {
+          ...current.siteProfiles,
+          [siteRule]: current.siteProfiles[siteRule] ?? inheritedProfileId
+        }
+      };
+    });
+    setSiteRuleInput("");
+  }, [flashStatus, settings, siteRuleInput, updateSettings]);
 
   if (!settings) {
     return (
       <main className="shell">
-        <div className="glass-panel p-8 text-sm text-muted-foreground">{t("options")}</div>
+        <div className="glass-panel p-8 text-sm text-muted-foreground" role="status" aria-live="polite">
+          {status || t("options")}
+        </div>
       </main>
     );
   }
@@ -173,9 +221,16 @@ function OptionsApp(): React.ReactElement {
           <p>{t("optionsSubtitle")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => void chrome.tabs.create({ url: chrome.runtime.getURL("fingerprint.html") })}>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (window.confirm(t("fingerprintTestExternalConfirm"))) {
+                void chrome.tabs.create({ url: FINGERPRINT_TEST_URL });
+              }
+            }}
+          >
             <Fingerprint className="h-4 w-4" />
-            {t("fingerprintTest")}
+            {t("fingerprintTestExternal")}
           </Button>
           <Button variant="outline" onClick={() => void reset()}>
             <RotateCcw className="h-4 w-4" />
@@ -185,8 +240,20 @@ function OptionsApp(): React.ReactElement {
       </header>
 
       <section className="glass-panel">
-        <SectionTitle title={t("build")} description={t("buildSubtitle")} />
+        <SectionTitle title={t("globalConfig")} description={t("globalConfigSubtitle")} />
         <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("globalProtection")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("globalProtectionSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.enabled}
+            onCheckedChange={(checked) => updateSettings((current) => ({ ...current, enabled: checked }))}
+            aria-label={t("globalProtection")}
+          />
           <div className="rounded-lg border border-border/70 bg-background/45 p-4">
             <div className="mb-1 flex items-center gap-2 text-sm font-medium">
               <Activity className="h-4 w-4 text-primary" />
@@ -200,6 +267,18 @@ function OptionsApp(): React.ReactElement {
             onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
             aria-label={t("advancedToggle")}
           />
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("disableUserAgentSpoofing")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("disableUserAgentSpoofingSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.disableUserAgentSpoofing}
+            onCheckedChange={(checked) => updateSettings((current) => ({ ...current, disableUserAgentSpoofing: checked }))}
+            aria-label={t("disableUserAgentSpoofing")}
+          />
         </div>
       </section>
 
@@ -211,11 +290,25 @@ function OptionsApp(): React.ReactElement {
             {t("addProfile")}
           </Button>
         </div>
-        <ProfilesTable profiles={profiles} onEdit={openEditProfile} onDelete={deleteProfile} />
+        <ProfilesTable
+          profiles={profiles}
+          hideUserAgentFields={settings.disableUserAgentSpoofing}
+          onEdit={openEditProfile}
+          onDelete={deleteProfile}
+        />
       </section>
 
       <section className="glass-panel">
         <SectionTitle title={t("siteRules")} description={t("siteRulesSubtitle")} />
+        <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={addSiteRule}>
+          <Input
+            value={siteRuleInput}
+            onChange={(event) => setSiteRuleInput(event.target.value)}
+            placeholder={t("siteRulePlaceholder")}
+            aria-label={t("siteRuleInputLabel")}
+          />
+          <Button type="submit" aria-label={t("addSiteRule")}>{t("addSiteRule")}</Button>
+        </form>
         <Table className="mt-4">
           <TableHeader>
             <TableRow>
@@ -225,11 +318,11 @@ function OptionsApp(): React.ReactElement {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {Object.entries(settings.siteProfiles).sort().length === 0 ? (
+            {sortedSiteProfiles(settings.siteProfiles).length === 0 ? (
               <TableRow>
                 <TableCell colSpan={3} className="text-muted-foreground">{t("noSiteRules")}</TableCell>
               </TableRow>
-            ) : Object.entries(settings.siteProfiles).sort().map(([siteKey, profileId]) => (
+            ) : sortedSiteProfiles(settings.siteProfiles).map(([siteKey, profileId]) => (
               <TableRow key={siteKey}>
                 <TableCell className="font-medium">{siteKey}</TableCell>
                 <TableCell>
@@ -240,7 +333,7 @@ function OptionsApp(): React.ReactElement {
                       siteProfiles: { ...current.siteProfiles, [siteKey]: value }
                     }))}
                   >
-                    <SelectTrigger className="max-w-xs">
+                    <SelectTrigger className="max-w-xs" aria-label={`${t("profile")}: ${siteKey}`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -254,6 +347,7 @@ function OptionsApp(): React.ReactElement {
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={siteKey === DEFAULT_SITE_RULE}
                     onClick={() => updateSettings((current) => {
                       const siteProfiles = { ...current.siteProfiles };
                       delete siteProfiles[siteKey];
@@ -272,8 +366,13 @@ function OptionsApp(): React.ReactElement {
       <section className="glass-panel">
         <SectionTitle title={t("excludedDomains")} description={t("excludedDomainsSubtitle")} />
         <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={addExclusion}>
-          <Input value={excludeInput} onChange={(event) => setExcludeInput(event.target.value)} placeholder="example.com" />
-          <Button type="submit">{t("add")}</Button>
+          <Input
+            value={excludeInput}
+            onChange={(event) => setExcludeInput(event.target.value)}
+            placeholder="example.com"
+            aria-label={t("exclusionRuleInputLabel")}
+          />
+          <Button type="submit" aria-label={t("addExclusion")}>{t("addExclusion")}</Button>
         </form>
         <div className="mt-4 flex flex-wrap gap-2">
           {settings.excludedDomains.length === 0 ? (
@@ -302,13 +401,14 @@ function OptionsApp(): React.ReactElement {
           <Save className="h-4 w-4" />
           {t("saveChanges")}
         </Button>
-        <span className="text-sm text-muted-foreground">{status}</span>
+        <span className="text-sm text-muted-foreground" role="status" aria-live="polite">{status}</span>
       </footer>
 
       <Dialog open={profileDialog !== null} onOpenChange={(open) => !open && setProfileDialog(null)}>
         {profileDialog ? (
           <ProfileEditorDialog
             state={profileDialog}
+            hideUserAgentFields={settings.disableUserAgentSpoofing}
             onDraftChange={(draft) => setProfileDialog((current) => current ? { ...current, draft } : current)}
             onCancel={() => setProfileDialog(null)}
             onSave={saveProfileDraft}
@@ -330,10 +430,12 @@ function SectionTitle({ title, description }: { title: string; description: stri
 
 function ProfilesTable({
   profiles,
+  hideUserAgentFields,
   onEdit,
   onDelete
 }: {
   profiles: Profile[];
+  hideUserAgentFields: boolean;
   onEdit: (profile: Profile) => void;
   onDelete: (profile: Profile) => void;
 }): React.ReactElement {
@@ -344,7 +446,7 @@ function ProfilesTable({
           <TableHead>{t("profile")}</TableHead>
           <TableHead>{t("locale")}</TableHead>
           <TableHead>{t("timezoneLocation")}</TableHead>
-          <TableHead>{t("platform")}</TableHead>
+          {!hideUserAgentFields ? <TableHead>{t("platform")}</TableHead> : null}
           <TableHead>{t("hardwareSummary")}</TableHead>
           <TableHead>{t("webglSummary")}</TableHead>
           <TableHead className="w-36 text-right">{t("actions")}</TableHead>
@@ -371,7 +473,7 @@ function ProfilesTable({
                 <div className="text-xs text-muted-foreground">{profile.latitude.toFixed(3)}, {profile.longitude.toFixed(3)}</div>
               </div>
             </TableCell>
-            <TableCell>{platformLabel(profile.platform)}</TableCell>
+            {!hideUserAgentFields ? <TableCell>{platformLabel(profile.platform)}</TableCell> : null}
             <TableCell>
               <span className="text-sm">{profile.hardwareConcurrency} CPU / {profile.deviceMemory} GB</span>
             </TableCell>
@@ -401,11 +503,13 @@ function ProfilesTable({
 
 function ProfileEditorDialog({
   state,
+  hideUserAgentFields,
   onDraftChange,
   onCancel,
   onSave
 }: {
   state: ProfileDialogState;
+  hideUserAgentFields: boolean;
   onDraftChange: (profile: Profile) => void;
   onCancel: () => void;
   onSave: (profile: Profile) => void;
@@ -456,14 +560,14 @@ function ProfileEditorDialog({
       <div className="grid gap-5">
         <div className="grid gap-4 md:grid-cols-2">
           <Field label={t("label")}>
-            <Input value={draft.label} onChange={(event) => update("label", event.target.value)} />
+            <Input aria-label={t("label")} value={draft.label} onChange={(event) => update("label", event.target.value)} />
           </Field>
           <Field label={t("profileId")}>
-            <Input value={draft.id} disabled />
+            <Input aria-label={t("profileId")} value={draft.id} disabled />
           </Field>
           <Field label={t("locale")}>
             <Select value={draft.locale} onValueChange={applyLocale}>
-              <SelectTrigger>
+              <SelectTrigger aria-label={t("locale")}>
                 <SelectValue placeholder={t("selectLocale")} />
               </SelectTrigger>
               <SelectContent>
@@ -473,33 +577,50 @@ function ProfileEditorDialog({
               </SelectContent>
             </Select>
           </Field>
-          <Field label={t("platform")}>
-            <Select value={draft.platform} onValueChange={(value) => update("platform", value)}>
-              <SelectTrigger>
-                <SelectValue placeholder={t("selectPlatform")} />
-              </SelectTrigger>
-              <SelectContent>
-                {PLATFORM_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          {!hideUserAgentFields ? (
+            <>
+              <Field label={t("platform")}>
+                <Select value={draft.platform} onValueChange={(value) => update("platform", value)}>
+                  <SelectTrigger aria-label={t("platform")}>
+                    <SelectValue placeholder={t("selectPlatform")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLATFORM_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label={t("architecture")}>
+                <Select value={draft.architecture} onValueChange={(value) => update("architecture", value)}>
+                  <SelectTrigger aria-label={t("architecture")}>
+                    <SelectValue placeholder={t("selectArchitecture")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ARCHITECTURE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </>
+          ) : null}
         </div>
 
         <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
           <Field label={t("languages")}>
             <Input
+              aria-label={t("languages")}
               value={languageText}
               onBlur={commitLanguageText}
               onChange={(event) => setLanguageText(event.target.value)}
             />
           </Field>
           <Field label={t("acceptLanguage")}>
-            <Input value={draft.acceptLanguage} onChange={(event) => update("acceptLanguage", event.target.value)} />
+            <Input aria-label={t("acceptLanguage")} value={draft.acceptLanguage} onChange={(event) => update("acceptLanguage", event.target.value)} />
           </Field>
           <Field label={t("intlLocale")}>
-            <Input value={draft.intlLocale} onChange={(event) => update("intlLocale", event.target.value)} />
+            <Input aria-label={t("intlLocale")} value={draft.intlLocale} onChange={(event) => update("intlLocale", event.target.value)} />
           </Field>
           <Field label={t("timezone")} className="md:col-span-2">
             <TimezonePicker
@@ -512,6 +633,7 @@ function ProfileEditorDialog({
         <div className="grid gap-4 md:grid-cols-3">
           <Field label={t("latitude")}>
             <Input
+              aria-label={t("latitude")}
               inputMode="decimal"
               value={numberText.latitude}
               onBlur={() => commitNumberText("latitude")}
@@ -520,6 +642,7 @@ function ProfileEditorDialog({
           </Field>
           <Field label={t("longitude")}>
             <Input
+              aria-label={t("longitude")}
               inputMode="decimal"
               value={numberText.longitude}
               onBlur={() => commitNumberText("longitude")}
@@ -528,6 +651,7 @@ function ProfileEditorDialog({
           </Field>
           <Field label={t("accuracy")}>
             <Input
+              aria-label={t("accuracy")}
               inputMode="decimal"
               value={numberText.accuracy}
               onBlur={() => commitNumberText("accuracy")}
@@ -541,6 +665,7 @@ function ProfileEditorDialog({
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Field label={t("hardwareConcurrency")}>
               <Input
+                aria-label={t("hardwareConcurrency")}
                 inputMode="numeric"
                 value={numberText.hardwareConcurrency}
                 onBlur={() => commitNumberText("hardwareConcurrency")}
@@ -549,17 +674,23 @@ function ProfileEditorDialog({
             </Field>
             <Field label={t("deviceMemory")}>
               <Input
+                aria-label={t("deviceMemory")}
                 inputMode="numeric"
                 value={numberText.deviceMemory}
                 onBlur={() => commitNumberText("deviceMemory")}
                 onChange={(event) => updateNumberText("deviceMemory", event.target.value)}
               />
             </Field>
+            {!hideUserAgentFields ? (
+              <Field label={t("userAgent")} className="md:col-span-2">
+                <Textarea aria-label={t("userAgent")} value={draft.userAgent} onChange={(event) => update("userAgent", event.target.value)} />
+              </Field>
+            ) : null}
             <Field label={t("webglVendor")}>
-              <Input value={draft.webglVendor} onChange={(event) => update("webglVendor", event.target.value)} />
+              <Input aria-label={t("webglVendor")} value={draft.webglVendor} onChange={(event) => update("webglVendor", event.target.value)} />
             </Field>
             <Field label={t("webglRenderer")} className="md:col-span-2">
-              <Textarea value={draft.webglRenderer} onChange={(event) => update("webglRenderer", event.target.value)} />
+              <Textarea aria-label={t("webglRenderer")} value={draft.webglRenderer} onChange={(event) => update("webglRenderer", event.target.value)} />
             </Field>
           </div>
         </details>
@@ -682,6 +813,8 @@ function normalizeProfile(profile: Profile): Profile {
     timezoneId: normalizeTimezoneId(profile.timezoneId.trim()),
     acceptLanguage: profile.acceptLanguage.trim(),
     platform: profile.platform.trim() || "Win32",
+    architecture: normalizeArchitecture(profile.architecture),
+    userAgent: typeof profile.userAgent === "string" ? profile.userAgent.trim() : "",
     uaMode: "desktop-chromium",
     canvasSeedPolicy: "site",
     latitude: finiteOr(profile.latitude, 0),
@@ -702,6 +835,22 @@ function finiteOr(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeArchitecture(value: unknown): string {
+  return value === "arm" ? "arm" : "x86";
+}
+
+function sortedSiteProfiles(siteProfiles: Record<string, string>): Array<[string, string]> {
+  return Object.entries(siteProfiles).sort(([left], [right]) => {
+    if (left === DEFAULT_SITE_RULE) {
+      return -1;
+    }
+    if (right === DEFAULT_SITE_RULE) {
+      return 1;
+    }
+    return left.localeCompare(right);
+  });
+}
+
 function platformLabel(value: string): string {
   return PLATFORM_OPTIONS.find((option) => option.value === value)?.label ?? value;
 }
@@ -720,4 +869,8 @@ function sendMessage<T = unknown>(message: RuntimeRequest): Promise<T> {
       resolve(response.value as T);
     });
   });
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

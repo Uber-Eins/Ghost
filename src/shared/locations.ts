@@ -26,6 +26,11 @@ export interface PlatformOption {
   label: string;
 }
 
+export interface ArchitectureOption {
+  value: string;
+  label: string;
+}
+
 export const FALLBACK_TIMEZONES = [
   "America/Los_Angeles",
   "America/New_York",
@@ -590,6 +595,11 @@ export const PLATFORM_OPTIONS: PlatformOption[] = [
   { value: "Win32", label: "Windows" },
   { value: "MacIntel", label: "macOS" },
   { value: "Linux x86_64", label: "Linux" }
+];
+
+export const ARCHITECTURE_OPTIONS: ArchitectureOption[] = [
+  { value: "x86", label: "x86 / x86_64" },
+  { value: "arm", label: "ARM / Apple Silicon" }
 ];
 
 export function localePresetFor(locale: string): LocalePreset | undefined {

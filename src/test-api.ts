@@ -1,6 +1,6 @@
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
 export { fnv1a, stableSeed } from "./shared/hash";
-export { isSupportedPageUrl } from "./shared/internal";
+export { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl } from "./shared/internal";
 export {
   applyLocalePreset,
   applyLocationPreset,
@@ -10,8 +10,43 @@ export {
   PLATFORM_OPTIONS,
   SUPPORTED_TIMEZONES
 } from "./shared/locations";
-export { allProfiles, PRESET_PROFILES, stableProfileIdForSite, userAgentForProfile } from "./shared/profiles";
-export { siteKeyFromHostname, siteKeyFromUrl } from "./shared/site";
+export {
+  allProfiles,
+  appVersionForProfile,
+  navigatorPlatformForProfile,
+  navigatorVendorForProfile,
+  PRESET_PROFILES,
+  stableProfileIdForSite,
+  userAgentForProfile,
+  userAgentMetadataForProfile
+} from "./shared/profiles";
+export {
+  DEFAULT_SITE_RULE,
+  FILE_SITE_RULE,
+  bestMatchingSiteRule,
+  exclusionAppliesToSiteKey,
+  exclusionsForSiteToggle,
+  isExcludedUrl,
+  normalizeExclusionRule,
+  normalizeSiteRuleKey,
+  requestFilePathStartRegexFilter,
+  requestHostPathStartRegexFilter,
+  requestPathStartRegexFilter,
+  siteKeyFromHostname,
+  siteKeyFromUrl,
+  urlMatchesHostPathRule
+} from "./shared/site";
 export { dateFromZonedLocalParts, getTimezoneOffsetMinutes } from "./shared/timezone";
-export { DEFAULT_SETTINGS, headerRulesAllowed, loadSettings, normalizeSettings, profilesFromSettings, resolveProfile, saveSettings, updateSettings } from "./shared/storage";
+export {
+  DEFAULT_EXCLUDED_DOMAINS,
+  DEFAULT_SETTINGS,
+  headerRulesAllowed,
+  loadSettings,
+  normalizeSettings,
+  profileIdForSiteKey,
+  profilesFromSettings,
+  resolveProfile,
+  saveSettings,
+  updateSettings
+} from "./shared/storage";
 export type { GhostSettings } from "./shared/types";
