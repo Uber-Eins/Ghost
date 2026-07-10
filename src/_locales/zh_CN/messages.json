@@ -41,7 +41,7 @@
   "disableHour": { "message": "停用 1 小时" },
   "edit": { "message": "编辑" },
   "editProfile": { "message": "编辑画像" },
-  "earlyBootstrapUnavailable": { "message": "请启用“允许用户脚本”，以便在页面脚本运行前完成保护" },
+  "earlyBootstrapUnavailable": { "message": "当前使用自动回退；仅需在希望页面脚本运行前完成保护时启用“允许用户脚本”" },
   "disableUserAgentSpoofing": { "message": "禁用 UA 伪装" },
   "disableUserAgentSpoofingSubtitle": { "message": "User-Agent、UA Client Hints 与平台信息交给浏览器或其他扩展处理。" },
   "excludedDomains": { "message": "排除域名" },

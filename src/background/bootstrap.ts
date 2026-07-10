@@ -6,6 +6,17 @@ const LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID = "ghost-bootstrap-fallback";
 const PAGE_MAIN_MATCHES = ["http://*/*", "https://*/*", "file:///*"];
 
 export async function refreshContentBootstrap(settings: GhostSettings, build: BuildTarget): Promise<void> {
+  await configureContentBootstrap(settings, build);
+}
+
+// A newly opened popup gets a fresh extension context after the user changes
+// Chrome's Allow User Scripts toggle. The service worker may still have the
+// old API availability cached, so let that fresh context repair registration.
+export function repairContentBootstrap(settings: GhostSettings, build: BuildTarget): Promise<boolean> {
+  return configureContentBootstrap(settings, build);
+}
+
+async function configureContentBootstrap(settings: GhostSettings, build: BuildTarget): Promise<boolean> {
   let userScriptAvailable = false;
   if (chrome.userScripts?.register) {
     const script: chrome.userScripts.RegisteredUserScript = {
@@ -37,6 +48,7 @@ export async function refreshContentBootstrap(settings: GhostSettings, build: Bu
   // available, the packaged fallback exits on normal URLs and only protects
   // those related frames. Otherwise it provides the normal asynchronous path.
   await refreshFallbackContentScript(userScriptAvailable);
+  return userScriptAvailable;
 }
 
 export async function isSynchronousContentBootstrapAvailable(): Promise<boolean> {

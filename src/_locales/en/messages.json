@@ -41,7 +41,7 @@
   "disableHour": { "message": "Disable for 1 hour" },
   "edit": { "message": "Edit" },
   "editProfile": { "message": "Edit profile" },
-  "earlyBootstrapUnavailable": { "message": "Enable Allow User Scripts for protection before page scripts run" },
+  "earlyBootstrapUnavailable": { "message": "Using automatic fallback. Enable Allow User Scripts only for protection before page scripts run" },
   "disableUserAgentSpoofing": { "message": "Disable UA spoofing" },
   "disableUserAgentSpoofingSubtitle": { "message": "Leave User-Agent, UA Client Hints, and platform surfaces to the browser or another extension." },
   "excludedDomains": { "message": "Excluded Domains" },

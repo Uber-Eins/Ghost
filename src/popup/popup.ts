@@ -1,5 +1,6 @@
 import { localizeDocument, t } from "../shared/i18n";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
+import { repairContentBootstrap } from "../background/bootstrap";
 import type { PopupState, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 const elements = {
@@ -22,7 +23,7 @@ void initialize().catch(showError);
 
 async function initialize(): Promise<void> {
   localizeDocument();
-  currentState = await loadPopupState();
+  currentState = await loadAndRepairPopupState();
   render();
 
   elements.globalEnabled.addEventListener("change", () => {
@@ -63,8 +64,22 @@ async function initialize(): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
-  currentState = await loadPopupState();
+  currentState = await loadAndRepairPopupState();
   render();
+}
+
+async function loadAndRepairPopupState(): Promise<PopupState> {
+  const state = await loadPopupState();
+  if (state.earlyBootstrapAvailable) {
+    return state;
+  }
+  try {
+    const repaired = await repairContentBootstrap(state.settings, state.build);
+    return repaired ? { ...state, earlyBootstrapAvailable: true } : state;
+  } catch {
+    // The automatic fallback remains registered when userScripts is unavailable.
+    return state;
+  }
 }
 
 function runMutation(message: RuntimeRequest): void {

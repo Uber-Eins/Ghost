@@ -35,6 +35,7 @@ import {
   timezonesForRegion
 } from "../shared/locations";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
+import { repairContentBootstrap } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
@@ -70,9 +71,13 @@ function OptionsApp(): React.ReactElement {
     localizeDocument();
     document.title = t("ghostOptions");
     void sendMessage<GhostSettings>({ type: "options.getState" })
-      .then((value) => setSettings(normalizeSettings(value)))
+      .then((value) => {
+        const nextSettings = normalizeSettings(value);
+        setSettings(nextSettings);
+        return repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild);
+      })
       .catch((error) => setStatus(errorText(error)));
-  }, []);
+  }, [isAdvancedBuild]);
 
   const flashStatus = React.useCallback((message: string) => {
     setStatus(message);
@@ -143,22 +148,26 @@ function OptionsApp(): React.ReactElement {
     }
     try {
       const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
-      setSettings(normalizeSettings(saved));
+      const normalized = normalizeSettings(saved);
+      setSettings(normalized);
+      await repairContentBootstrapBestEffort(normalized, isAdvancedBuild);
       flashStatus(t("saved"));
     } catch (error) {
       flashStatus(errorText(error));
     }
-  }, [flashStatus, settings]);
+  }, [flashStatus, isAdvancedBuild, settings]);
 
   const reset = React.useCallback(async () => {
     try {
       const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
-      setSettings(normalizeSettings(resetSettings));
+      const normalized = normalizeSettings(resetSettings);
+      setSettings(normalized);
+      await repairContentBootstrapBestEffort(normalized, isAdvancedBuild);
       flashStatus(t("resetDone"));
     } catch (error) {
       flashStatus(errorText(error));
     }
-  }, [flashStatus]);
+  }, [flashStatus, isAdvancedBuild]);
 
   const addExclusion = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -873,4 +882,12 @@ function sendMessage<T = unknown>(message: RuntimeRequest): Promise<T> {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function repairContentBootstrapBestEffort(settings: GhostSettings, advanced: boolean): Promise<void> {
+  try {
+    await repairContentBootstrap(settings, advanced ? "advanced" : "lite");
+  } catch {
+    // Settings remain usable through the automatic fallback.
+  }
 }

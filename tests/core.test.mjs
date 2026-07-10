@@ -32,6 +32,7 @@ import {
   requestFilePathStartRegexFilter,
   requestHostPathStartRegexFilter,
   requestPathStartRegexFilter,
+  repairContentBootstrap,
   resolveProfile,
   sanitizeCanvasFont,
   isExcludedUrl,
@@ -295,6 +296,58 @@ test("bootstrap does not broadcast settings into the page", () => {
   const enMessages = JSON.parse(readFileSync(new URL("../dist/lite/_locales/en/messages.json", import.meta.url), "utf8"));
   const zhMessages = JSON.parse(readFileSync(new URL("../dist/lite/_locales/zh_CN/messages.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(zhMessages).sort(), Object.keys(enMessages).sort());
+});
+
+test("a fresh extension context repairs user-script registration after access is granted", async () => {
+  const registeredContentScripts = new Map();
+  const registeredUserScripts = new Map();
+  const scripting = {
+    async getRegisteredContentScripts({ ids }) {
+      return ids.flatMap((id) => registeredContentScripts.has(id) ? [registeredContentScripts.get(id)] : []);
+    },
+    async registerContentScripts(scripts) {
+      for (const script of scripts) registeredContentScripts.set(script.id, script);
+    },
+    async updateContentScripts(scripts) {
+      for (const script of scripts) registeredContentScripts.set(script.id, script);
+    },
+    async unregisterContentScripts({ ids }) {
+      for (const id of ids) registeredContentScripts.delete(id);
+    }
+  };
+  const previousChrome = globalThis.chrome;
+  try {
+    globalThis.chrome = { scripting };
+    assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), false);
+    assert.deepEqual(registeredContentScripts.get("ghost-page-main-fallback").js, ["page-main.js"]);
+
+    globalThis.chrome = {
+      scripting,
+      userScripts: {
+        async getScripts({ ids }) {
+          return ids.flatMap((id) => registeredUserScripts.has(id) ? [registeredUserScripts.get(id)] : []);
+        },
+        async register(scripts) {
+          for (const script of scripts) registeredUserScripts.set(script.id, script);
+        },
+        async update(scripts) {
+          for (const script of scripts) registeredUserScripts.set(script.id, script);
+        },
+        async unregister({ ids }) {
+          for (const id of ids) registeredUserScripts.delete(id);
+        }
+      }
+    };
+    assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), true);
+    const registered = registeredUserScripts.get("ghost-page-main");
+    assert.ok(registered);
+    assert.equal(registered.world, "MAIN");
+    assert.equal(registered.runAt, "document_start");
+    assert.equal(registered.js[1].file, "page-main.js");
+    assert.deepEqual(registeredContentScripts.get("ghost-page-main-fallback").js, ["page-related.js"]);
+  } finally {
+    globalThis.chrome = previousChrome;
+  }
 });
 
 test("DNR rules keep navigation and initiator profiles coherent", () => {

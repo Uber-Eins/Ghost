@@ -20,11 +20,11 @@ npm run verify
 
 Load `dist/lite` or `dist/advanced` as an unpacked extension in Chromium/Helium.
 
-For protection to be installed before page scripts run, enable **Allow User Scripts** in the extension's details (Chrome 138+) or Developer mode on older supported Chromium. Ghost shows a warning in the popup when it must use the asynchronous fallback.
+For protection to be installed before page scripts run, enable **Allow User Scripts** in the extension's details (Chrome 138+) or Developer mode on older supported Chromium. This is optional: without it Ghost uses an automatic asynchronous fallback, although a page's earliest reads may occur before the configured profile is available. Reopening the popup after granting access repairs registration automatically.
 
 ## Scope
 
 Ghost targets common JavaScript and request-header fingerprinting. It does not claim to hide IP address, DNS, TLS/JA3, HTTP/2, GPU process, browser-kernel, or manual visual signals. Font and emoji rendering cannot be fully replaced from a normal extension; Ghost stabilizes JavaScript-visible canvas and text-measurement outputs instead.
 
 ## TODO
-* 字体检测部分还需要进一步优化
+* 预期在0.2.0前实现完整的DNS保护
