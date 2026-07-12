@@ -133,9 +133,13 @@ export function resolveProfile(
   url: string,
   settings: GhostSettings,
   build: BuildTarget,
-  now = Date.now()
+  now = Date.now(),
+  partitionUrl = url
 ): ResolvedProfile {
-  const siteKey = siteKeyFromUrl(url);
+  // Profile selection and fingerprint seeds are partitioned by the top-level
+  // site. Callers resolving a subframe pass its URL as `url` (so document
+  // exclusions still work) and the trusted tab URL as `partitionUrl`.
+  const siteKey = siteKeyFromUrl(partitionUrl);
   const profileId = profileIdForSiteKey(siteKey, settings);
   const profile = findProfile(profileId, settings.customProfiles, settings.hiddenPresetProfileIds);
   const temporarilyDisabled = isTemporarilyDisabled(settings, now);

@@ -157,6 +157,7 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
 
 async function handleResolveProfile(url: string, sender: chrome.runtime.MessageSender) {
   const pageUrl = senderBoundPageUrl(url, sender.url ?? "", sender.origin, sender.tab?.url);
+  const topLevelUrl = trustedTopLevelUrl(sender, pageUrl);
   const tabId = shouldApplyTabWideOverrides(sender) ? sender.tab.id : null;
   const tabRevision = tabId === null ? 0 : nextTabOverrideRevision(tabId);
   if (!pageUrl) {
@@ -181,10 +182,10 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
 
   const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
   const revision = settingsRevision;
-  const resolved = resolveProfile(pageUrl, settings, __GHOST_BUILD__);
+  const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings);
 
   if (revision !== settingsRevision) {
-    return resolveProfile(pageUrl, await readAppliedSettings(), __GHOST_BUILD__);
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
   }
 
   if (tabId !== null && tabRevision === currentTabOverrideRevision(tabId)) {
@@ -192,7 +193,7 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (revision !== settingsRevision) {
-    return resolveProfile(pageUrl, await readAppliedSettings(), __GHOST_BUILD__);
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
   }
 
   if (tabId !== null) {
@@ -208,10 +209,19 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (revision !== settingsRevision) {
-    return resolveProfile(pageUrl, await readAppliedSettings(), __GHOST_BUILD__);
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
   }
 
   return resolved;
+}
+
+function trustedTopLevelUrl(sender: chrome.runtime.MessageSender, fallbackUrl: string): string {
+  const tabUrl = sender.tab?.url;
+  return typeof tabUrl === "string" && isSupportedPageUrl(tabUrl) ? tabUrl : fallbackUrl;
+}
+
+function resolveFrameProfile(pageUrl: string, topLevelUrl: string, settings: GhostSettings) {
+  return resolveProfile(pageUrl, settings, __GHOST_BUILD__, Date.now(), topLevelUrl);
 }
 
 function shouldApplyTabWideOverrides(sender: chrome.runtime.MessageSender): sender is chrome.runtime.MessageSender & { tab: chrome.tabs.Tab & { id: number } } {

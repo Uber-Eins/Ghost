@@ -15,7 +15,6 @@ import {
   dateFromZonedLocalParts,
   exclusionAppliesToSiteKey,
   exclusionsForSiteToggle,
-  farbleCanvasPixels,
   getTimezoneOffsetMinutes,
   headerRulesAllowed,
   isAccessiblePageUrl,
@@ -94,61 +93,6 @@ test("site keys preserve full host names", () => {
   assert.equal(siteKeyFromHostname("localhost"), "localhost");
 });
 
-test("canvas farbling preserves precision probes and flat fills", () => {
-  const redPixel = new Uint8ClampedArray([255, 0, 0, 255]);
-  assert.deepEqual([
-    ...farbleCanvasPixels(redPixel, 1, 1, "site-a", 0, 0, {
-      data: redPixel,
-      width: 1,
-      height: 1,
-      originX: 0,
-      originY: 0
-    })
-  ], [...redPixel]);
-
-  const flatFill = new Uint8ClampedArray(16 * 16 * 4);
-  for (let offset = 0; offset < flatFill.length; offset += 4) {
-    flatFill.set([18, 52, 86, 255], offset);
-  }
-  const flatContext = { data: flatFill, width: 16, height: 16, originX: 0, originY: 0 };
-  assert.deepEqual([...farbleCanvasPixels(flatFill, 16, 16, "site-a", 0, 0, flatContext)], [...flatFill]);
-});
-
-test("canvas farbling is stable while keeping site seeds distinct", () => {
-  const width = 64;
-  const height = 64;
-  const raster = new Uint8ClampedArray(width * height * 4);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const offset = (y * width + x) * 4;
-      raster[offset] = (x * 3 + y) % 256;
-      raster[offset + 1] = (x + y * 5) % 256;
-      raster[offset + 2] = (x * 7 + y * 11) % 256;
-      raster[offset + 3] = 255;
-    }
-  }
-
-  const rasterContext = { data: raster, width, height, originX: 0, originY: 0 };
-  const first = farbleCanvasPixels(raster, width, height, "site-a", 0, 0, rasterContext);
-  const repeated = farbleCanvasPixels(raster, width, height, "site-a", 0, 0, rasterContext);
-  const otherSite = farbleCanvasPixels(raster, width, height, "site-b", 0, 0, rasterContext);
-  assert.deepEqual([...first], [...repeated]);
-  assert.notDeepEqual([...first], [...raster]);
-  assert.notDeepEqual([...first], [...otherSite]);
-
-  const reconstructed = new Uint8ClampedArray(raster.length);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const offset = (y * width + x) * 4;
-      const nativePixel = raster.slice(offset, offset + 4);
-      const protectedPixel = farbleCanvasPixels(nativePixel, 1, 1, "site-a", x, y, rasterContext);
-      reconstructed.set(protectedPixel, offset);
-    }
-  }
-  assert.deepEqual([...reconstructed], [...first]);
-  assert.notDeepEqual([...reconstructed], [...raster]);
-});
-
 test("site rules use host suffix matching with a wildcard default", () => {
   assert.equal(normalizeSettings({}).siteProfiles[DEFAULT_SITE_RULE], PRESET_PROFILES[0].id);
   const settings = normalizeSettings({
@@ -173,6 +117,32 @@ test("site rules use host suffix matching with a wildcard default", () => {
   const siteRuleKeys = Object.keys(settings.siteProfiles);
   resolveProfile("https://new.example.test", settings, "lite");
   assert.deepEqual(Object.keys(settings.siteProfiles), siteRuleKeys);
+});
+
+test("subframes inherit the top-level site's profile and seed partition", () => {
+  const settings = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    excludedDefaultsVersion: 1,
+    excludedDomains: [],
+    siteProfiles: {
+      [DEFAULT_SITE_RULE]: "los-angeles-en-us",
+      "news.example": "tokyo-ja-jp",
+      "tracker.example": "beijing-zh-cn"
+    }
+  });
+  const topLevel = resolveProfile("https://news.example/article", settings, "lite");
+  const embedded = resolveProfile(
+    "https://tracker.example/frame",
+    settings,
+    "lite",
+    Date.now(),
+    "https://news.example/article"
+  );
+
+  assert.equal(embedded.siteKey, "news.example");
+  assert.equal(embedded.profile.id, "tokyo-ja-jp");
+  assert.equal(embedded.seed, topLevel.seed);
+  assert.notEqual(embedded.seed, resolveProfile("https://tracker.example/frame", settings, "lite").seed);
 });
 
 test("default exclusions include captcha and account challenge routes", () => {
@@ -333,6 +303,7 @@ test("bootstrap does not broadcast settings into the page", () => {
   const manifest = JSON.parse(readFileSync(new URL("../dist/lite/manifest.json", import.meta.url), "utf8"));
   assert.equal(existsSync(new URL("../dist/lite/content-fallback.js", import.meta.url)), false);
   assert.doesNotMatch(pageMain, /bootstrapAck|type:\s*["']bootstrap["']/);
+  assert.doesNotMatch(pageMain, /willReadFrequently|getImageData|toDataURL|toBlob/);
   assert.doesNotMatch(bridge, /getContentBootstrap|payload:\s*bootstrap|request\.url/);
   assert.match(bridge, /type:\s*["']connected["']/);
   assert.equal(manifest.minimum_chrome_version, "120");
@@ -375,7 +346,7 @@ test("a fresh extension context repairs user-script registration after access is
   try {
     globalThis.chrome = { scripting };
     assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), false);
-    assert.deepEqual(registeredContentScripts.get("ghost-page-main-fallback").js, ["page-main.js"]);
+    assert.equal(registeredContentScripts.has("ghost-page-main-fallback"), false);
 
     globalThis.chrome = {
       scripting,
@@ -582,6 +553,7 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     assert.equal(attachCount, 1);
     const userAgentCalls = calls.filter((call) => call.method === "Emulation.setUserAgentOverride");
     assert.match(userAgentCalls.at(-1).params.userAgent, /Chrome\/152/);
+    assert.deepEqual(calls.filter((call) => call.method.startsWith("Runtime.")), []);
 
     const reset = await applyAdvancedOverrides(7, secondProfile, { userAgent: false });
     assert.equal(reset.applied, true);

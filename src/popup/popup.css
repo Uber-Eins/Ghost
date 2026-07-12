@@ -42,6 +42,29 @@ h1 {
   text-transform: uppercase;
 }
 
+#build.unprotected {
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
+.warning {
+  padding: 10px;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.warning p {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.warning button {
+  border-color: #fca5a5;
+}
+
 section {
   margin: 12px 0;
 }
@@ -137,6 +160,21 @@ footer {
   .profile {
     border-color: #334155;
     background: #0f172a;
+  }
+
+  #build.unprotected {
+    border-color: #ef4444;
+    color: #fca5a5;
+  }
+
+  .warning {
+    border-color: #7f1d1d;
+    background: #450a0a;
+    color: #fecaca;
+  }
+
+  .warning button {
+    border-color: #7f1d1d;
   }
 
   .status {

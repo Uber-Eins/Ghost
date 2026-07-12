@@ -1,6 +1,5 @@
 import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
-import { farbleCanvasPixels, type CanvasRasterContext } from "../shared/canvas";
 import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
@@ -89,8 +88,11 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
 const nativeNavigator = snapshotNavigator();
 const nativeGeolocation = navigator.geolocation;
 const initialPageUrl = currentGhostPageUrl();
-const fallbackSiteKey = siteKeyFromUrl(initialPageUrl);
-const bootstrapProfile = pendingBootstrap ? resolveBootstrapPayload(pendingBootstrap) : null;
+const initialTopLevelUrl = currentTopLevelGhostPageUrl(initialPageUrl);
+const fallbackSiteKey = siteKeyFromUrl(initialTopLevelUrl);
+const bootstrapProfile = pendingBootstrap
+  ? resolveBootstrapPayload(pendingBootstrap, initialPageUrl, initialTopLevelUrl)
+  : null;
 const fallbackProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
 const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
 const initialGlobalPrivacyControlEnabled = bootstrapProfile?.globalPrivacyControlEnabled
@@ -360,13 +362,42 @@ function takeBootstrapPayload(): BootstrapPayload | undefined {
   return payload;
 }
 
-function resolveBootstrapPayload(payload: BootstrapPayload | undefined): ResolvedProfile | null {
-  const pageUrl = currentGhostPageUrl();
+function resolveBootstrapPayload(
+  payload: BootstrapPayload | undefined,
+  pageUrl: string,
+  topLevelUrl: string
+): ResolvedProfile | null {
   if (!payload?.settings || !pageUrl) {
     return null;
   }
   const build = payload.build === "advanced" ? "advanced" : __GHOST_BUILD__;
-  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build);
+  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build, Date.now(), topLevelUrl);
+}
+
+function currentTopLevelGhostPageUrl(fallbackUrl: string): string {
+  try {
+    const topUrl = window.top?.location.href;
+    if (topUrl && isSupportedPageUrl(topUrl)) {
+      return topUrl;
+    }
+  } catch {
+    // Cross-origin top frames are exposed through Chromium's read-only
+    // ancestorOrigins list instead.
+  }
+
+  try {
+    const { ancestorOrigins } = location;
+    const topOrigin = ancestorOrigins?.length > 0
+      ? ancestorOrigins.item(ancestorOrigins.length - 1)
+      : null;
+    if (topOrigin && isSupportedPageUrl(`${topOrigin}/`)) {
+      return `${topOrigin}/`;
+    }
+  } catch {
+    // Fall back to the current/referrer-derived URL for related frames.
+  }
+
+  return fallbackUrl;
 }
 
 function currentGhostPageUrl(): string {
@@ -1087,23 +1118,9 @@ function buildPosition(): GeolocationPosition {
 }
 
 function patchCanvas(): void {
-  const canvasPrototype = window.HTMLCanvasElement?.prototype;
   const contextPrototype = window.CanvasRenderingContext2D?.prototype;
-  const nativeGetImageData = contextPrototype?.getImageData;
-  if (contextPrototype && nativeGetImageData) {
+  if (contextPrototype) {
     const nativeMeasureText = contextPrototype.measureText;
-    Object.defineProperty(contextPrototype, "getImageData", {
-      configurable: true,
-      value: function getImageData(this: CanvasRenderingContext2D, ...args: Parameters<CanvasRenderingContext2D["getImageData"]>) {
-        const imageData = nativeGetImageData.apply(this, args);
-        const [originX, originY] = normalizedCanvasReadOrigin(args);
-        if (!state.enabled) {
-          return imageData;
-        }
-        const rasterContext = readCanvasRasterContext(this, nativeGetImageData, imageData, originX, originY, args[4]);
-        return farbledImageData(imageData, originX, originY, rasterContext);
-      }
-    });
     Object.defineProperty(contextPrototype, "measureText", {
       configurable: true,
       value: function measureText(this: CanvasRenderingContext2D, text: string) {
@@ -1126,31 +1143,6 @@ function patchCanvas(): void {
             return value;
           }
         });
-      }
-    });
-  }
-
-  if (canvasPrototype) {
-    const nativeToDataURL = canvasPrototype.toDataURL;
-    const nativeToBlob = canvasPrototype.toBlob;
-    Object.defineProperty(canvasPrototype, "toDataURL", {
-      configurable: true,
-      value: function toDataURL(this: HTMLCanvasElement, ...args: Parameters<HTMLCanvasElement["toDataURL"]>) {
-        if (!state.enabled) {
-          return nativeToDataURL.apply(this, args);
-        }
-        const clone = nativeGetImageData ? cloneCanvasWithFarbling(this, nativeGetImageData) : null;
-        return nativeToDataURL.apply(clone ?? this, args);
-      }
-    });
-    Object.defineProperty(canvasPrototype, "toBlob", {
-      configurable: true,
-      value: function toBlob(this: HTMLCanvasElement, callback: BlobCallback, type?: string, quality?: number) {
-        if (!state.enabled) {
-          return nativeToBlob.call(this, callback, type, quality);
-        }
-        const clone = nativeGetImageData ? cloneCanvasWithFarbling(this, nativeGetImageData) : null;
-        return nativeToBlob.call(clone ?? this, callback, type, quality);
       }
     });
   }
@@ -1177,103 +1169,6 @@ function measureTextWithFont(
   } finally {
     context.font = originalFont;
   }
-}
-
-function cloneCanvasWithFarbling(
-  source: HTMLCanvasElement,
-  nativeGetImageData: CanvasRenderingContext2D["getImageData"]
-): HTMLCanvasElement | null {
-  try {
-    const clone = document.createElement("canvas");
-    clone.width = source.width;
-    clone.height = source.height;
-    const context = clone.getContext("2d", { willReadFrequently: true });
-    if (!context) {
-      return null;
-    }
-    const sourceContext = source.getContext("2d", { willReadFrequently: true });
-    let imageData: ImageData;
-    if (sourceContext) {
-      imageData = nativeGetImageData.call(sourceContext, 0, 0, clone.width, clone.height);
-    } else {
-      context.drawImage(source, 0, 0);
-      imageData = nativeGetImageData.call(context, 0, 0, clone.width, clone.height);
-    }
-    context.putImageData(farbledImageData(imageData, 0, 0), 0, 0);
-    return clone;
-  } catch {
-    return null;
-  }
-}
-
-function farbledImageData(
-  imageData: ImageData,
-  originX: number,
-  originY: number,
-  rasterContext?: CanvasRasterContext
-): ImageData {
-  const variationContext = rasterContext ?? {
-    data: imageData.data,
-    width: imageData.width,
-    height: imageData.height,
-    originX,
-    originY
-  };
-  const data = farbleCanvasPixels(
-    imageData.data,
-    imageData.width,
-    imageData.height,
-    state.seed,
-    originX,
-    originY,
-    variationContext
-  );
-  return new ImageData(data, imageData.width, imageData.height, { colorSpace: imageData.colorSpace });
-}
-
-function readCanvasRasterContext(
-  context: CanvasRenderingContext2D,
-  nativeGetImageData: CanvasRenderingContext2D["getImageData"],
-  imageData: ImageData,
-  originX: number,
-  originY: number,
-  settings?: ImageDataSettings
-): CanvasRasterContext {
-  try {
-    const neighborhood = settings === undefined
-      ? nativeGetImageData.call(context, originX - 1, originY - 1, imageData.width + 2, imageData.height + 2)
-      : nativeGetImageData.call(context, originX - 1, originY - 1, imageData.width + 2, imageData.height + 2, settings);
-    return {
-      data: neighborhood.data,
-      width: neighborhood.width,
-      height: neighborhood.height,
-      originX: originX - 1,
-      originY: originY - 1
-    };
-  } catch {
-    return {
-      data: imageData.data,
-      width: imageData.width,
-      height: imageData.height,
-      originX,
-      originY
-    };
-  }
-}
-
-function normalizedCanvasReadOrigin(args: Parameters<CanvasRenderingContext2D["getImageData"]>): [number, number] {
-  const sourceX = finiteInteger(Number(args[0]));
-  const sourceY = finiteInteger(Number(args[1]));
-  const sourceWidth = Number(args[2]);
-  const sourceHeight = Number(args[3]);
-  return [
-    Number.isFinite(sourceWidth) && sourceWidth < 0 ? sourceX + Math.trunc(sourceWidth) : sourceX,
-    Number.isFinite(sourceHeight) && sourceHeight < 0 ? sourceY + Math.trunc(sourceHeight) : sourceY
-  ];
-}
-
-function finiteInteger(value: number): number {
-  return Number.isFinite(value) ? Math.trunc(value) : 0;
 }
 
 function patchWebGL(): void {

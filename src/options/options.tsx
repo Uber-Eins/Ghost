@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Edit3, Fingerprint, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { Activity, Edit3, Fingerprint, Plus, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import {
@@ -35,7 +35,7 @@ import {
   timezonesForRegion
 } from "../shared/locations";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
-import { repairContentBootstrap } from "../background/bootstrap";
+import { openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
@@ -59,6 +59,7 @@ function OptionsApp(): React.ReactElement {
   const [siteRuleInput, setSiteRuleInput] = React.useState("");
   const [excludeInput, setExcludeInput] = React.useState("");
   const [status, setStatus] = React.useState("");
+  const [synchronousProtectionAvailable, setSynchronousProtectionAvailable] = React.useState<boolean | null>(null);
   const statusTimer = React.useRef<number | null>(null);
 
   const isAdvancedBuild = React.useMemo(() => chrome.runtime.getManifest().permissions?.includes("debugger") ?? false, []);
@@ -71,12 +72,15 @@ function OptionsApp(): React.ReactElement {
     localizeDocument();
     document.title = t("ghostOptions");
     void sendMessage<GhostSettings>({ type: "options.getState" })
-      .then((value) => {
+      .then(async (value) => {
         const nextSettings = normalizeSettings(value);
         setSettings(nextSettings);
-        return repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild);
+        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild));
       })
-      .catch((error) => setStatus(errorText(error)));
+      .catch((error) => {
+        setSynchronousProtectionAvailable(false);
+        setStatus(errorText(error));
+      });
   }, [isAdvancedBuild]);
 
   const flashStatus = React.useCallback((message: string) => {
@@ -150,7 +154,7 @@ function OptionsApp(): React.ReactElement {
       const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
       const normalized = normalizeSettings(saved);
       setSettings(normalized);
-      await repairContentBootstrapBestEffort(normalized, isAdvancedBuild);
+      setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
       flashStatus(t("saved"));
     } catch (error) {
       flashStatus(errorText(error));
@@ -162,7 +166,7 @@ function OptionsApp(): React.ReactElement {
       const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
       const normalized = normalizeSettings(resetSettings);
       setSettings(normalized);
-      await repairContentBootstrapBestEffort(normalized, isAdvancedBuild);
+      setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
       flashStatus(t("resetDone"));
     } catch (error) {
       flashStatus(errorText(error));
@@ -247,6 +251,23 @@ function OptionsApp(): React.ReactElement {
           </Button>
         </div>
       </header>
+
+      {synchronousProtectionAvailable === false ? (
+        <section className="glass-panel border-red-500/60" role="alert">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="mb-1 flex items-center gap-2 font-semibold text-red-600 dark:text-red-300">
+                <ShieldAlert className="h-5 w-5" />
+                {t("unprotected")}
+              </div>
+              <p className="text-sm text-muted-foreground">{t("enableUserScriptsRequired")}</p>
+            </div>
+            <Button variant="outline" onClick={() => void openUserScriptsSettingsPage().catch((error) => setStatus(errorText(error)))}>
+              {t("openExtensionSettings")}
+            </Button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="glass-panel">
         <SectionTitle title={t("globalConfig")} description={t("globalConfigSubtitle")} />
@@ -899,10 +920,10 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function repairContentBootstrapBestEffort(settings: GhostSettings, advanced: boolean): Promise<void> {
+async function repairContentBootstrapBestEffort(settings: GhostSettings, advanced: boolean): Promise<boolean> {
   try {
-    await repairContentBootstrap(settings, advanced ? "advanced" : "lite");
+    return await repairContentBootstrap(settings, advanced ? "advanced" : "lite");
   } catch {
-    // Settings remain usable through the automatic fallback.
+    return false;
   }
 }

@@ -44,9 +44,10 @@ async function configureContentBootstrap(settings: GhostSettings, build: BuildTa
     }
   }
 
-  // userScripts cannot match related about:/data:/blob: frames. When it is
-  // available, the packaged fallback exits on normal URLs and only protects
-  // those related frames. Otherwise it provides the normal asynchronous path.
+  // userScripts cannot match related about:/data:/blob: frames. Keep a
+  // related-frame compatibility path only after synchronous protection is
+  // available for normal documents. Without userScripts, do not install the
+  // asynchronous page-world fallback and imply that the page is protected.
   await refreshFallbackContentScript(userScriptAvailable);
   return userScriptAvailable;
 }
@@ -73,6 +74,19 @@ async function refreshFallbackContentScript(relatedOnly: boolean): Promise<void>
     return;
   }
 
+  const registered = await chrome.scripting.getRegisteredContentScripts({
+    ids: [PAGE_MAIN_FALLBACK_SCRIPT_ID, LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID]
+  }).catch(() => []);
+  if (registered.some((script) => script.id === LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID)) {
+    await chrome.scripting.unregisterContentScripts({ ids: [LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID] });
+  }
+  if (!relatedOnly) {
+    if (registered.some((script) => script.id === PAGE_MAIN_FALLBACK_SCRIPT_ID)) {
+      await chrome.scripting.unregisterContentScripts({ ids: [PAGE_MAIN_FALLBACK_SCRIPT_ID] });
+    }
+    return;
+  }
+
   const scripts: chrome.scripting.RegisteredContentScript[] = [{
     id: PAGE_MAIN_FALLBACK_SCRIPT_ID,
     matches: PAGE_MAIN_MATCHES,
@@ -80,21 +94,23 @@ async function refreshFallbackContentScript(relatedOnly: boolean): Promise<void>
     matchOriginAsFallback: true,
     runAt: "document_start",
     world: "MAIN",
-    js: [relatedOnly ? "page-related.js" : "page-main.js"],
+    js: ["page-related.js"],
     persistAcrossSessions: true
   }];
 
-  const registered = await chrome.scripting.getRegisteredContentScripts({
-    ids: [PAGE_MAIN_FALLBACK_SCRIPT_ID, LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID]
-  }).catch(() => []);
-  if (registered.some((script) => script.id === LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID)) {
-    await chrome.scripting.unregisterContentScripts({ ids: [LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID] });
-  }
   if (registered.some((script) => script.id === PAGE_MAIN_FALLBACK_SCRIPT_ID)) {
     await chrome.scripting.updateContentScripts(scripts);
   } else {
     await chrome.scripting.registerContentScripts(scripts);
   }
+}
+
+export async function openUserScriptsSettingsPage(): Promise<void> {
+  const majorVersion = Number(navigator.userAgent.match(/(?:Chrome|Chromium)\/([0-9]+)/)?.[1] ?? 0);
+  const url = majorVersion >= 138
+    ? `chrome://extensions/?id=${chrome.runtime.id}`
+    : "chrome://extensions/";
+  await chrome.tabs.create({ url });
 }
 
 async function unregisterPageMainUserScript(): Promise<void> {

@@ -1,10 +1,12 @@
 import { localizeDocument, t } from "../shared/i18n";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
-import { repairContentBootstrap } from "../background/bootstrap";
+import { openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
 import type { PopupState, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 const elements = {
   build: byId("build"),
+  protectionWarning: byId("protectionWarning"),
+  enableUserScripts: byId<HTMLButtonElement>("enableUserScripts"),
   globalEnabled: byId<HTMLInputElement>("globalEnabled"),
   siteEnabled: byId<HTMLInputElement>("siteEnabled"),
   site: byId("site"),
@@ -56,6 +58,9 @@ async function initialize(): Promise<void> {
     runMutation({ type: "setTemporaryDisable", durationMs: 60 * 60 * 1000 });
   });
   elements.options.addEventListener("click", () => chrome.runtime.openOptionsPage());
+  elements.enableUserScripts.addEventListener("click", () => {
+    void openUserScriptsSettingsPage().catch(showError);
+  });
   elements.test.addEventListener("click", () => {
     if (window.confirm(t("fingerprintTestExternalConfirm"))) {
       void chrome.tabs.create({ url: FINGERPRINT_TEST_URL });
@@ -77,7 +82,7 @@ async function loadAndRepairPopupState(): Promise<PopupState> {
     const repaired = await repairContentBootstrap(state.settings, state.build);
     return repaired ? { ...state, earlyBootstrapAvailable: true } : state;
   } catch {
-    // The automatic fallback remains registered when userScripts is unavailable.
+    // The warning remains visible until synchronous registration succeeds.
     return state;
   }
 }
@@ -102,13 +107,16 @@ function render(): void {
 
   elements.build.textContent = currentState.earlyBootstrapAvailable
     ? currentState.build
-    : `${currentState.build} · ${t("earlyBootstrapUnavailable")}`;
+    : `${currentState.build} · ${t("unprotected")}`;
+  elements.build.classList.toggle("unprotected", !currentState.earlyBootstrapAvailable);
+  elements.protectionWarning.hidden = currentState.earlyBootstrapAvailable;
   elements.globalEnabled.checked = currentState.settings.enabled;
   elements.siteEnabled.checked = currentState.enabledForSite;
   elements.site.textContent = currentState.siteKey || "-";
   elements.siteEnabled.disabled = !currentState.supportedPage;
   elements.profile.disabled = !currentState.supportedPage;
   elements.regenerate.disabled = !currentState.supportedPage;
+  elements.test.disabled = !currentState.earlyBootstrapAvailable;
   elements.profile.replaceChildren(...currentState.profiles.map(optionForProfile));
   elements.profile.value = currentState.profile.id;
   renderProfile(currentState.profile);

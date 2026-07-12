@@ -2,15 +2,22 @@ import { navigatorPlatformForProfile, runtimeUserAgent, userAgentForProfile, use
 import type { Profile } from "../shared/types";
 
 const PROTOCOL_VERSION = "1.3";
+const OWNED_DEBUGGER_TABS_KEY = "ghost.advanced.ownedDebuggerTabs";
 
 type Debuggee = chrome.debugger.Debuggee;
 
 const debuggerOperationQueues = new Map<number, Promise<void>>();
 const ownedDebuggerTabs = new Set<number>();
+let ownershipLoad: Promise<void> | null = null;
+let ownershipWriteQueue: Promise<void> = Promise.resolve();
 
 chrome.debugger?.onDetach?.addListener((source) => {
-  if (typeof source.tabId === "number") {
-    ownedDebuggerTabs.delete(source.tabId);
+  const { tabId } = source;
+  if (typeof tabId === "number") {
+    void loadOwnedDebuggerTabs().then(() => {
+      ownedDebuggerTabs.delete(tabId);
+      return persistOwnedDebuggerTabs();
+    });
   }
 });
 
@@ -80,10 +87,10 @@ async function resetDebuggerSession(target: Debuggee, tabId: number): Promise<vo
     detachError = error;
   } finally {
     ownedDebuggerTabs.delete(tabId);
+    await persistOwnedDebuggerTabs();
   }
 
-  if (detachError && await probeDebuggerOwnership(target)) {
-    ownedDebuggerTabs.add(tabId);
+  if (detachError) {
     throw detachError;
   }
 
@@ -104,43 +111,19 @@ async function clearAdvancedOverridesNow(tabId: number): Promise<void> {
 }
 
 async function attachIfNeeded(target: Debuggee, tabId: number): Promise<void> {
+  await loadOwnedDebuggerTabs();
   if (ownedDebuggerTabs.has(tabId)) {
     return;
   }
 
-  // A debugger session can outlive an MV3 service-worker instance. Probe before
-  // attaching so a restarted worker can recover ownership without relying on
-  // Chrome's indistinguishable "Another debugger" error.
-  if (await probeDebuggerOwnership(target)) {
-    ownedDebuggerTabs.add(tabId);
-    return;
-  }
-
-  try {
-    await chrome.debugger.attach(target, PROTOCOL_VERSION);
-    ownedDebuggerTabs.add(tabId);
-  } catch (error) {
-    // An attach may race another operation from this extension. Only suppress
-    // the error if a command proves that this extension owns the session.
-    if (await probeDebuggerOwnership(target)) {
-      ownedDebuggerTabs.add(tabId);
-      return;
-    }
-    throw error;
-  }
-}
-
-async function probeDebuggerOwnership(target: Debuggee): Promise<boolean> {
-  try {
-    await sendCommand(target, "Runtime.enable");
-    return true;
-  } catch {
-    return false;
-  }
+  await chrome.debugger.attach(target, PROTOCOL_VERSION);
+  ownedDebuggerTabs.add(tabId);
+  await persistOwnedDebuggerTabs();
 }
 
 async function clearAndDetachOwnedSession(target: Debuggee, tabId: number, forceDetach = false): Promise<void> {
-  const owned = forceDetach || ownedDebuggerTabs.has(tabId) || await probeDebuggerOwnership(target);
+  await loadOwnedDebuggerTabs();
+  const owned = forceDetach || ownedDebuggerTabs.has(tabId);
   if (!owned) {
     ownedDebuggerTabs.delete(tabId);
     return;
@@ -156,7 +139,42 @@ async function clearAndDetachOwnedSession(target: Debuggee, tabId: number, force
     // The target may have closed or another debugger may have replaced us.
   } finally {
     ownedDebuggerTabs.delete(tabId);
+    await persistOwnedDebuggerTabs();
   }
+}
+
+function loadOwnedDebuggerTabs(): Promise<void> {
+  if (!ownershipLoad) {
+    ownershipLoad = (async () => {
+      try {
+        const stored = await chrome.storage?.session?.get(OWNED_DEBUGGER_TABS_KEY);
+        const tabIds = stored?.[OWNED_DEBUGGER_TABS_KEY];
+        if (Array.isArray(tabIds)) {
+          for (const tabId of tabIds) {
+            if (typeof tabId === "number" && Number.isInteger(tabId) && tabId >= 0) {
+              ownedDebuggerTabs.add(tabId);
+            }
+          }
+        }
+      } catch {
+        // Session storage is an optimization for service-worker restarts.
+      }
+    })();
+  }
+  return ownershipLoad;
+}
+
+function persistOwnedDebuggerTabs(): Promise<void> {
+  ownershipWriteQueue = ownershipWriteQueue.then(async () => {
+    try {
+      await chrome.storage?.session?.set({
+        [OWNED_DEBUGGER_TABS_KEY]: [...ownedDebuggerTabs]
+      });
+    } catch {
+      // Losing the marker only disables restart recovery; never probe Runtime.
+    }
+  });
+  return ownershipWriteQueue;
 }
 
 async function bestEffortCommand(target: Debuggee, method: string, commandParams?: object): Promise<void> {

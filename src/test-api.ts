@@ -1,5 +1,4 @@
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
-export { farbleCanvasPixels } from "./shared/canvas";
 export { repairContentBootstrap } from "./background/bootstrap";
 export { fnv1a, stableSeed } from "./shared/hash";
 export { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl } from "./shared/internal";
