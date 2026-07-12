@@ -26,6 +26,7 @@ export interface Profile {
 
 export interface GhostSettings {
   enabled: boolean;
+  globalPrivacyControlEnabled: boolean;
   advancedEnabled: boolean;
   disableUserAgentSpoofing: boolean;
   siteProfiles: Record<string, string>;
@@ -40,6 +41,7 @@ export interface GhostSettings {
 export interface ResolvedProfile {
   build: BuildTarget;
   enabled: boolean;
+  globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   reason?: "global-disabled" | "temporary-disabled" | "excluded-domain" | "unsupported-url";
   siteKey: string;

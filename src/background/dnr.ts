@@ -19,6 +19,7 @@ const RULE_ID_RANGE = 100000;
 const TAB_RULE_ID_LIMIT = TAB_RULE_ID_BASE + RULE_ID_RANGE;
 const EXCLUSION_RULE_PRIORITY = 1_000_000;
 const FRAME_EXCLUSION_RULE_PRIORITY = EXCLUSION_RULE_PRIORITY + 1;
+const GLOBAL_PRIVACY_CONTROL_PRIORITY = FRAME_EXCLUSION_RULE_PRIORITY + 1;
 const TAB_RULE_PRIORITY = EXCLUSION_RULE_PRIORITY - 1;
 const {
   ResourceType,
@@ -169,7 +170,7 @@ async function refreshHeaderRulesNow(settings: GhostSettings): Promise<void> {
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: legacyRuleIds });
   }
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-  const addRules = headerRulesAllowed(settings) ? buildRules(settings) : [];
+  const addRules = buildRules(settings);
   await validateRules(addRules);
   const removeRuleIds = new Set(existingRules
     .map((rule) => rule.id)
@@ -185,14 +186,16 @@ async function refreshHeaderRulesNow(settings: GhostSettings): Promise<void> {
 }
 
 function buildRules(settings: GhostSettings): chrome.declarativeNetRequest.Rule[] {
-  if (settings.excludedDomains.some(isWildcardExclusion)) {
-    return [];
+  const usedRuleIds = new Set<number>();
+  const rules = settings.globalPrivacyControlEnabled
+    ? globalPrivacyControlRules(usedRuleIds)
+    : [];
+  if (!headerRulesAllowed(settings) || settings.excludedDomains.some(isWildcardExclusion)) {
+    return rules;
   }
 
   const profiles = profilesFromSettings(settings);
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
-  const usedRuleIds = new Set<number>();
-  const rules: chrome.declarativeNetRequest.Rule[] = [];
   for (const exclusion of settings.excludedDomains) {
     for (const rule of allowRulesForExclusion(exclusion, usedRuleIds)) {
       rules.push(rule);
@@ -207,6 +210,18 @@ function buildRules(settings: GhostSettings): chrome.declarativeNetRequest.Rule[
     rules.push(...rulesForSite(ruleKey, profile, usedRuleIds, !settings.disableUserAgentSpoofing));
   }
   return rules;
+}
+
+function globalPrivacyControlRules(usedRuleIds: Set<number>): chrome.declarativeNetRequest.Rule[] {
+  return (["http", "https", "ws", "wss"] as const).map((scheme) => modifyHeadersRule(
+    nextRuleId(`global-privacy-control:${scheme}`, usedRuleIds),
+    GLOBAL_PRIVACY_CONTROL_PRIORITY,
+    [{ header: "Sec-GPC", operation: HeaderOperation.SET, value: "1" }],
+    {
+      urlFilter: `|${scheme}://`,
+      resourceTypes: RESOURCE_TYPES
+    }
+  ));
 }
 
 function isWildcardExclusion(exclusion: string): boolean {

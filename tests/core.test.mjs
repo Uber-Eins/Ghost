@@ -15,6 +15,7 @@ import {
   dateFromZonedLocalParts,
   exclusionAppliesToSiteKey,
   exclusionsForSiteToggle,
+  farbleCanvasPixels,
   getTimezoneOffsetMinutes,
   headerRulesAllowed,
   isAccessiblePageUrl,
@@ -91,6 +92,61 @@ test("site keys preserve full host names", () => {
   assert.equal(siteKeyFromUrl("http://[::1]:3000/path"), "[::1]");
   assert.equal(siteKeyFromUrl("file:///tmp/example.html"), FILE_SITE_RULE);
   assert.equal(siteKeyFromHostname("localhost"), "localhost");
+});
+
+test("canvas farbling preserves precision probes and flat fills", () => {
+  const redPixel = new Uint8ClampedArray([255, 0, 0, 255]);
+  assert.deepEqual([
+    ...farbleCanvasPixels(redPixel, 1, 1, "site-a", 0, 0, {
+      data: redPixel,
+      width: 1,
+      height: 1,
+      originX: 0,
+      originY: 0
+    })
+  ], [...redPixel]);
+
+  const flatFill = new Uint8ClampedArray(16 * 16 * 4);
+  for (let offset = 0; offset < flatFill.length; offset += 4) {
+    flatFill.set([18, 52, 86, 255], offset);
+  }
+  const flatContext = { data: flatFill, width: 16, height: 16, originX: 0, originY: 0 };
+  assert.deepEqual([...farbleCanvasPixels(flatFill, 16, 16, "site-a", 0, 0, flatContext)], [...flatFill]);
+});
+
+test("canvas farbling is stable while keeping site seeds distinct", () => {
+  const width = 64;
+  const height = 64;
+  const raster = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      raster[offset] = (x * 3 + y) % 256;
+      raster[offset + 1] = (x + y * 5) % 256;
+      raster[offset + 2] = (x * 7 + y * 11) % 256;
+      raster[offset + 3] = 255;
+    }
+  }
+
+  const rasterContext = { data: raster, width, height, originX: 0, originY: 0 };
+  const first = farbleCanvasPixels(raster, width, height, "site-a", 0, 0, rasterContext);
+  const repeated = farbleCanvasPixels(raster, width, height, "site-a", 0, 0, rasterContext);
+  const otherSite = farbleCanvasPixels(raster, width, height, "site-b", 0, 0, rasterContext);
+  assert.deepEqual([...first], [...repeated]);
+  assert.notDeepEqual([...first], [...raster]);
+  assert.notDeepEqual([...first], [...otherSite]);
+
+  const reconstructed = new Uint8ClampedArray(raster.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const nativePixel = raster.slice(offset, offset + 4);
+      const protectedPixel = farbleCanvasPixels(nativePixel, 1, 1, "site-a", x, y, rasterContext);
+      reconstructed.set(protectedPixel, offset);
+    }
+  }
+  assert.deepEqual([...reconstructed], [...first]);
+  assert.notDeepEqual([...reconstructed], [...raster]);
 });
 
 test("site rules use host suffix matching with a wildcard default", () => {
@@ -398,16 +454,19 @@ test("DNR rules keep navigation and initiator profiles coherent", () => {
     ...settings,
     disableUserAgentSpoofing: true
   }));
-  assert.ok(uaDisabledRules
-    .filter((rule) => rule.action.type === "modifyHeaders")
-    .every((rule) => {
+  const uaDisabledProfileRules = uaDisabledRules
+    .filter((rule) => rule.action.type === "modifyHeaders" && headerNames(rule).has("accept-language"));
+  assert.ok(uaDisabledProfileRules.length > 0);
+  assert.ok(uaDisabledProfileRules.every((rule) => {
       const names = headerNames(rule);
       return names.has("accept-language") && !names.has("user-agent") && !names.has("sec-ch-ua");
     }));
-  assert.deepEqual(buildHeaderRulesForTesting(normalizeSettings({
+  const wildcardExcludedRules = buildHeaderRulesForTesting(normalizeSettings({
     ...settings,
     excludedDomains: [DEFAULT_SITE_RULE]
-  })), []);
+  }));
+  assert.equal(wildcardExcludedRules.length, 4);
+  assert.ok(wildcardExcludedRules.every((rule) => headerNames(rule).has("sec-gpc")));
 
   const excludedSettings = normalizeSettings({
     ...settings,
@@ -431,6 +490,38 @@ test("DNR rules keep navigation and initiator profiles coherent", () => {
     && rule.condition.initiatorDomains?.includes("example.com")
     && rule.condition.resourceTypes?.includes("xmlhttprequest")
   )));
+});
+
+test("GPC sends a global request signal independently of Ghost profile protection", () => {
+  const settings = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    enabled: false,
+    excludedDomains: [DEFAULT_SITE_RULE]
+  });
+  assert.equal(settings.globalPrivacyControlEnabled, true);
+  assert.equal(resolveProfile("https://example.com", settings, "lite").globalPrivacyControlEnabled, true);
+
+  const rules = buildHeaderRulesForTesting(settings);
+  assert.equal(rules.length, 4);
+  assert.deepEqual(
+    rules.map((rule) => rule.condition.urlFilter).sort(),
+    ["|http://", "|https://", "|ws://", "|wss://"]
+  );
+  for (const rule of rules) {
+    assert.equal(rule.action.type, "modifyHeaders");
+    assert.deepEqual(rule.action.requestHeaders, [{ header: "Sec-GPC", operation: "set", value: "1" }]);
+    assert.ok(rule.priority > 1_000_001);
+    assert.ok(rule.condition.resourceTypes.includes("main_frame"));
+    assert.ok(rule.condition.resourceTypes.includes("xmlhttprequest"));
+    assert.ok(rule.condition.resourceTypes.includes("websocket"));
+  }
+
+  const disabled = normalizeSettings({
+    ...settings,
+    globalPrivacyControlEnabled: false
+  });
+  assert.equal(resolveProfile("https://example.com", disabled, "lite").globalPrivacyControlEnabled, false);
+  assert.deepEqual(buildHeaderRulesForTesting(disabled), []);
 });
 
 test("advanced overrides reuse, serialize, reset, and clean debugger sessions", async () => {
@@ -679,6 +770,7 @@ test("profiles expose an allow-listed font set instead of enumerating blocked fo
 test("resolveProfile respects global disable and exclusions", () => {
   const disabled = normalizeSettings({ ...DEFAULT_SETTINGS, enabled: false });
   assert.equal(resolveProfile("https://example.com", disabled, "lite").enabled, false);
+  assert.equal(resolveProfile("https://example.com", disabled, "lite").globalPrivacyControlEnabled, true);
   assert.equal(resolveProfile("https://example.com", disabled, "lite").uaSpoofingEnabled, false);
   assert.equal(resolveProfile("https://example.com", disabled, "lite").reason, "global-disabled");
 
@@ -749,6 +841,7 @@ test("settings migration rejects malformed scalar settings", () => {
   const settings = normalizeSettings({
     ...DEFAULT_SETTINGS,
     enabled: "false",
+    globalPrivacyControlEnabled: "false",
     advancedEnabled: "false",
     disableUserAgentSpoofing: "true",
     temporaryDisabledUntil: Number.NaN,
@@ -759,6 +852,7 @@ test("settings migration rejects malformed scalar settings", () => {
     }
   });
   assert.equal(settings.enabled, DEFAULT_SETTINGS.enabled);
+  assert.equal(settings.globalPrivacyControlEnabled, DEFAULT_SETTINGS.globalPrivacyControlEnabled);
   assert.equal(settings.advancedEnabled, DEFAULT_SETTINGS.advancedEnabled);
   assert.equal(settings.disableUserAgentSpoofing, DEFAULT_SETTINGS.disableUserAgentSpoofing);
   assert.equal(settings.temporaryDisabledUntil, null);

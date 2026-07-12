@@ -1,6 +1,6 @@
 # Ghost
 
-Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and canvas/audio fingerprint surface without sending telemetry or using a remote service.
+Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and canvas/audio fingerprint surface without sending telemetry or using a remote service. Its independent Global Privacy Control switch exposes `navigator.globalPrivacyControl` and sends `Sec-GPC: 1` on HTTP requests.
 
 ## Builds
 

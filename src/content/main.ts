@@ -1,5 +1,6 @@
 import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
+import { farbleCanvasPixels, type CanvasRasterContext } from "../shared/canvas";
 import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
@@ -10,7 +11,7 @@ import {
   getTimezoneOffsetMinutes,
   getZonedParts
 } from "../shared/timezone";
-import { normalizeSettings, resolveProfile } from "../shared/storage";
+import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../shared/storage";
 import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
@@ -21,6 +22,7 @@ type NumericArray = Uint8Array<ArrayBufferLike> | Uint8ClampedArray<ArrayBufferL
 
 interface GhostState {
   enabled: boolean;
+  globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   siteKey: string;
   seed: string;
@@ -81,7 +83,8 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "appVersion",
   "userAgentData",
   "hardwareConcurrency",
-  "deviceMemory"
+  "deviceMemory",
+  "globalPrivacyControl"
 ]);
 const nativeNavigator = snapshotNavigator();
 const nativeGeolocation = navigator.geolocation;
@@ -90,11 +93,14 @@ const fallbackSiteKey = siteKeyFromUrl(initialPageUrl);
 const bootstrapProfile = pendingBootstrap ? resolveBootstrapPayload(pendingBootstrap) : null;
 const fallbackProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
 const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
+const initialGlobalPrivacyControlEnabled = bootstrapProfile?.globalPrivacyControlEnabled
+  ?? DEFAULT_SETTINGS.globalPrivacyControlEnabled;
 const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled ?? initialEnabled;
 const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
 const initialSeed = bootstrapProfile?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
 const state: GhostState = {
   enabled: initialEnabled,
+  globalPrivacyControlEnabled: initialGlobalPrivacyControlEnabled,
   uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
   siteKey: initialSiteKey,
   profile: fallbackProfile,
@@ -114,6 +120,7 @@ let restoredPageNeedsReload = false;
 const reloadOnProfileChangeRequestIds = new Set<number>();
 let cachedUserAgentData: { key: string; value: object } | null = null;
 let cachedLanguages: { key: string; value: readonly string[] } | null = null;
+const synchronizedChildNavigators = new WeakSet<object>();
 
 Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
   configurable: false,
@@ -130,6 +137,7 @@ if (initialPageUrl) {
 function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
   const shouldReload = reloadOnProfileChangeRequestIds.delete(requestId) && profileChanged(resolved);
   state.enabled = resolved.enabled;
+  state.globalPrivacyControlEnabled = resolved.globalPrivacyControlEnabled;
   state.uaSpoofingEnabled = resolved.uaSpoofingEnabled;
   state.siteKey = resolved.siteKey;
   state.profile = resolved.profile;
@@ -144,6 +152,7 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
   }
   if (
     initialEnabled !== resolved.enabled
+    || initialGlobalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || initialUserAgentSpoofingEnabled !== resolved.uaSpoofingEnabled
     || initialSiteKey !== resolved.siteKey
     || initialSeed !== resolved.seed
@@ -160,6 +169,7 @@ function install(): void {
   (window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled = true;
 
   patchNavigator();
+  patchIframeNavigatorAccess();
   patchIntl();
   patchDate();
   patchGeolocation();
@@ -332,6 +342,7 @@ function profileSignature(profile: Profile): string {
 function profileChanged(resolved: ResolvedProfile): boolean {
   return hasResolvedProfile && (
     state.enabled !== resolved.enabled
+    || state.globalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || state.uaSpoofingEnabled !== resolved.uaSpoofingEnabled
     || state.siteKey !== resolved.siteKey
     || state.seed !== resolved.seed
@@ -384,7 +395,8 @@ function snapshotNavigator(): Record<string, unknown> {
     appVersion: nav.appVersion,
     userAgentData: nav.userAgentData,
     hardwareConcurrency: nav.hardwareConcurrency,
-    deviceMemory: nav.deviceMemory
+    deviceMemory: nav.deviceMemory,
+    globalPrivacyControl: nav.globalPrivacyControl
   };
 }
 
@@ -422,6 +434,12 @@ function spoofingBaseUserAgentString(): string {
 }
 
 function patchNavigator(): void {
+  defineNavigatorGetter("globalPrivacyControl", function globalPrivacyControl() {
+    if (state.globalPrivacyControlEnabled) {
+      return true;
+    }
+    return Boolean(readNativeNavigatorProperty("globalPrivacyControl"));
+  });
   defineNavigatorGetter("language", () => state.enabled ? state.profile.locale : readNativeNavigatorProperty("language"));
   defineNavigatorGetter("languages", () => state.enabled ? profileLanguages() : readNativeNavigatorProperty("languages"));
   defineNavigatorGetter("platform", () => state.uaSpoofingEnabled ? navigatorPlatformForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("platform"));
@@ -433,6 +451,143 @@ function patchNavigator(): void {
   syncUserAgentDataDescriptor();
 }
 
+function patchIframeNavigatorAccess(): void {
+  const prototype = window.HTMLIFrameElement?.prototype;
+  if (!prototype) {
+    return;
+  }
+
+  const contentWindowDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentWindow");
+  const nativeGetContentWindow = contentWindowDescriptor?.get;
+  if (contentWindowDescriptor && nativeGetContentWindow) {
+    const wrappedGetter = new Proxy(nativeGetContentWindow, {
+      apply(target, thisArgument, argumentsList) {
+        const childWindow = Reflect.apply(target, thisArgument, argumentsList) as Window | null;
+        synchronizeChildNavigator(childWindow);
+        return childWindow;
+      }
+    });
+    try {
+      Object.defineProperty(prototype, "contentWindow", {
+        ...contentWindowDescriptor,
+        get: wrappedGetter
+      });
+    } catch {
+      // Other iframe entry points and all-frame injection still provide coverage.
+    }
+  }
+
+  const contentDocumentDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentDocument");
+  const nativeGetContentDocument = contentDocumentDescriptor?.get;
+  if (contentDocumentDescriptor && nativeGetContentDocument) {
+    const wrappedGetter = new Proxy(nativeGetContentDocument, {
+      apply(target, thisArgument, argumentsList) {
+        const childDocument = Reflect.apply(target, thisArgument, argumentsList) as Document | null;
+        synchronizeChildNavigator(childDocument?.defaultView ?? null);
+        return childDocument;
+      }
+    });
+    try {
+      Object.defineProperty(prototype, "contentDocument", {
+        ...contentDocumentDescriptor,
+        get: wrappedGetter
+      });
+    } catch {
+      // Other iframe entry points and all-frame injection still provide coverage.
+    }
+  }
+}
+
+function synchronizeChildNavigator(childWindow: Window | null): void {
+  if (!childWindow || childWindow === window) {
+    return;
+  }
+
+  try {
+    const childGlobal = childWindow as Window & typeof globalThis;
+    const childNavigator = childGlobal.navigator;
+    // A related about:blank/srcdoc frame can install Ghost with fallback
+    // settings before it receives the parent's resolved profile. Its controller
+    // therefore must not prevent the parent from synchronizing direct access.
+    if (!childNavigator || synchronizedChildNavigators.has(childNavigator)) {
+      return;
+    }
+    const childPrototype = Object.getPrototypeOf(childNavigator) as object | null;
+    if (!childPrototype) {
+      return;
+    }
+
+    let languagesCache: { key: string; value: readonly string[] } | null = null;
+    const properties = [
+      "language",
+      "languages",
+      "platform",
+      "vendor",
+      "userAgent",
+      "appVersion",
+      "userAgentData",
+      "hardwareConcurrency",
+      "deviceMemory",
+      "globalPrivacyControl"
+    ];
+    for (const property of properties) {
+      const mainNavigator = navigator as unknown as Record<string, unknown>;
+      if (!(property in mainNavigator)) {
+        const owner = findDescriptorOwner(childPrototype, property);
+        if (owner) {
+          try {
+            delete (owner as Record<string, unknown>)[property];
+          } catch {
+            // Ignore a locked child-realm descriptor.
+          }
+        }
+        continue;
+      }
+
+      const owner = findDescriptorOwner(childPrototype, property) ?? childPrototype;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, property);
+      const mirroredValue = (): unknown => {
+        const value = mainNavigator[property];
+        if (property !== "languages" || !Array.isArray(value)) {
+          return value;
+        }
+        const key = JSON.stringify(value);
+        if (languagesCache?.key !== key) {
+          const childLanguages = childGlobal.Array.from(value) as string[];
+          languagesCache = {
+            key,
+            value: childGlobal.Object.freeze(childLanguages)
+          };
+        }
+        return languagesCache.value;
+      };
+      const getter = descriptor?.get
+        ? nativeLookingGetter(descriptor.get, mirroredValue)
+        : mirroredValue;
+      try {
+        Object.defineProperty(owner, property, {
+          configurable: true,
+          enumerable: descriptor?.enumerable ?? true,
+          get: getter
+        });
+      } catch {
+        try {
+          Object.defineProperty(childNavigator, property, {
+            configurable: true,
+            enumerable: descriptor?.enumerable ?? true,
+            get: getter
+          });
+        } catch {
+          // Some child realms lock selected navigator fields.
+        }
+      }
+    }
+    synchronizedChildNavigators.add(childNavigator);
+  } catch {
+    // Cross-origin frame globals are intentionally inaccessible to the parent.
+  }
+}
+
 function profileLanguages(): readonly string[] {
   const key = JSON.stringify(state.profile.languages);
   if (cachedLanguages?.key !== key) {
@@ -442,24 +597,40 @@ function profileLanguages(): readonly string[] {
 }
 
 function defineNavigatorGetter(property: string, getter: () => unknown): void {
-  const owner = findDescriptorOwner(Navigator.prototype, property) ?? Navigator.prototype;
+  const snapshot = nativeNavigatorDescriptors.get(property);
+  const owner = snapshot?.owner ?? findDescriptorOwner(Navigator.prototype, property) ?? Navigator.prototype;
+  const descriptor = snapshot?.descriptor ?? Object.getOwnPropertyDescriptor(owner, property);
+  const installedGetter = descriptor?.get
+    ? nativeLookingGetter(descriptor.get, getter)
+    : getter;
   try {
     Object.defineProperty(owner, property, {
       configurable: true,
-      enumerable: true,
-      get: getter
+      enumerable: descriptor?.enumerable ?? true,
+      get: installedGetter
     });
   } catch {
     try {
       Object.defineProperty(navigator, property, {
         configurable: true,
-        enumerable: true,
-        get: getter
+        enumerable: descriptor?.enumerable ?? true,
+        get: installedGetter
       });
     } catch {
       // Some Chromium builds keep selected navigator fields locked.
     }
   }
+}
+
+function nativeLookingGetter(nativeGetter: () => unknown, value: () => unknown): () => unknown {
+  return new Proxy(nativeGetter, {
+    apply(target, thisArgument, argumentsList) {
+      // Preserve the native getter's receiver validation before substituting
+      // the configured value. Proxies stringify with a native-code surface.
+      Reflect.apply(target, thisArgument, argumentsList);
+      return value();
+    }
+  });
 }
 
 function syncUserAgentDataDescriptor(): void {
@@ -918,14 +1089,19 @@ function buildPosition(): GeolocationPosition {
 function patchCanvas(): void {
   const canvasPrototype = window.HTMLCanvasElement?.prototype;
   const contextPrototype = window.CanvasRenderingContext2D?.prototype;
-  if (contextPrototype) {
-    const nativeGetImageData = contextPrototype.getImageData;
+  const nativeGetImageData = contextPrototype?.getImageData;
+  if (contextPrototype && nativeGetImageData) {
     const nativeMeasureText = contextPrototype.measureText;
     Object.defineProperty(contextPrototype, "getImageData", {
       configurable: true,
       value: function getImageData(this: CanvasRenderingContext2D, ...args: Parameters<CanvasRenderingContext2D["getImageData"]>) {
         const imageData = nativeGetImageData.apply(this, args);
-        return state.enabled ? noisedImageData(imageData, "getImageData") : imageData;
+        const [originX, originY] = normalizedCanvasReadOrigin(args);
+        if (!state.enabled) {
+          return imageData;
+        }
+        const rasterContext = readCanvasRasterContext(this, nativeGetImageData, imageData, originX, originY, args[4]);
+        return farbledImageData(imageData, originX, originY, rasterContext);
       }
     });
     Object.defineProperty(contextPrototype, "measureText", {
@@ -963,7 +1139,7 @@ function patchCanvas(): void {
         if (!state.enabled) {
           return nativeToDataURL.apply(this, args);
         }
-        const clone = cloneCanvasWithNoise(this, "toDataURL");
+        const clone = nativeGetImageData ? cloneCanvasWithFarbling(this, nativeGetImageData) : null;
         return nativeToDataURL.apply(clone ?? this, args);
       }
     });
@@ -973,7 +1149,7 @@ function patchCanvas(): void {
         if (!state.enabled) {
           return nativeToBlob.call(this, callback, type, quality);
         }
-        const clone = cloneCanvasWithNoise(this, "toBlob");
+        const clone = nativeGetImageData ? cloneCanvasWithFarbling(this, nativeGetImageData) : null;
         return nativeToBlob.call(clone ?? this, callback, type, quality);
       }
     });
@@ -1003,7 +1179,10 @@ function measureTextWithFont(
   }
 }
 
-function cloneCanvasWithNoise(source: HTMLCanvasElement, purpose: string): HTMLCanvasElement | null {
+function cloneCanvasWithFarbling(
+  source: HTMLCanvasElement,
+  nativeGetImageData: CanvasRenderingContext2D["getImageData"]
+): HTMLCanvasElement | null {
   try {
     const clone = document.createElement("canvas");
     clone.width = source.width;
@@ -1012,29 +1191,89 @@ function cloneCanvasWithNoise(source: HTMLCanvasElement, purpose: string): HTMLC
     if (!context) {
       return null;
     }
-    context.drawImage(source, 0, 0);
-    const imageData = context.getImageData(0, 0, clone.width, clone.height);
-    context.putImageData(noisedImageData(imageData, purpose), 0, 0);
+    const sourceContext = source.getContext("2d", { willReadFrequently: true });
+    let imageData: ImageData;
+    if (sourceContext) {
+      imageData = nativeGetImageData.call(sourceContext, 0, 0, clone.width, clone.height);
+    } else {
+      context.drawImage(source, 0, 0);
+      imageData = nativeGetImageData.call(context, 0, 0, clone.width, clone.height);
+    }
+    context.putImageData(farbledImageData(imageData, 0, 0), 0, 0);
     return clone;
   } catch {
     return null;
   }
 }
 
-function noisedImageData(imageData: ImageData, purpose: string): ImageData {
-  const data = new Uint8ClampedArray(imageData.data);
-  const random = mulberry32(fnv1a(`${state.seed}:canvas:${purpose}:${imageData.width}x${imageData.height}`));
-  const stride = Math.max(4, Math.floor(data.length / 512));
-  for (let index = 0; index < data.length; index += stride) {
-    const channel = index - (index % 4);
-    if (data[channel + 3] === 0) {
-      continue;
-    }
-    data[channel] = clampByte(data[channel] + randomStep(random));
-    data[channel + 1] = clampByte(data[channel + 1] + randomStep(random));
-    data[channel + 2] = clampByte(data[channel + 2] + randomStep(random));
-  }
+function farbledImageData(
+  imageData: ImageData,
+  originX: number,
+  originY: number,
+  rasterContext?: CanvasRasterContext
+): ImageData {
+  const variationContext = rasterContext ?? {
+    data: imageData.data,
+    width: imageData.width,
+    height: imageData.height,
+    originX,
+    originY
+  };
+  const data = farbleCanvasPixels(
+    imageData.data,
+    imageData.width,
+    imageData.height,
+    state.seed,
+    originX,
+    originY,
+    variationContext
+  );
   return new ImageData(data, imageData.width, imageData.height, { colorSpace: imageData.colorSpace });
+}
+
+function readCanvasRasterContext(
+  context: CanvasRenderingContext2D,
+  nativeGetImageData: CanvasRenderingContext2D["getImageData"],
+  imageData: ImageData,
+  originX: number,
+  originY: number,
+  settings?: ImageDataSettings
+): CanvasRasterContext {
+  try {
+    const neighborhood = settings === undefined
+      ? nativeGetImageData.call(context, originX - 1, originY - 1, imageData.width + 2, imageData.height + 2)
+      : nativeGetImageData.call(context, originX - 1, originY - 1, imageData.width + 2, imageData.height + 2, settings);
+    return {
+      data: neighborhood.data,
+      width: neighborhood.width,
+      height: neighborhood.height,
+      originX: originX - 1,
+      originY: originY - 1
+    };
+  } catch {
+    return {
+      data: imageData.data,
+      width: imageData.width,
+      height: imageData.height,
+      originX,
+      originY
+    };
+  }
+}
+
+function normalizedCanvasReadOrigin(args: Parameters<CanvasRenderingContext2D["getImageData"]>): [number, number] {
+  const sourceX = finiteInteger(Number(args[0]));
+  const sourceY = finiteInteger(Number(args[1]));
+  const sourceWidth = Number(args[2]);
+  const sourceHeight = Number(args[3]);
+  return [
+    Number.isFinite(sourceWidth) && sourceWidth < 0 ? sourceX + Math.trunc(sourceWidth) : sourceX,
+    Number.isFinite(sourceHeight) && sourceHeight < 0 ? sourceY + Math.trunc(sourceHeight) : sourceY
+  ];
+}
+
+function finiteInteger(value: number): number {
+  return Number.isFinite(value) ? Math.trunc(value) : 0;
 }
 
 function patchWebGL(): void {

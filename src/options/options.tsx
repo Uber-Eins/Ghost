@@ -266,6 +266,21 @@ function OptionsApp(): React.ReactElement {
           <div className="rounded-lg border border-border/70 bg-background/45 p-4">
             <div className="mb-1 flex items-center gap-2 text-sm font-medium">
               <Activity className="h-4 w-4 text-primary" />
+              {t("globalPrivacyControl")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("globalPrivacyControlSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.globalPrivacyControlEnabled}
+            onCheckedChange={(checked) => updateSettings((current) => ({
+              ...current,
+              globalPrivacyControlEnabled: checked
+            }))}
+            aria-label={t("globalPrivacyControl")}
+          />
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
               {isAdvancedBuild ? t("buildAdvanced") : t("buildLite")}
             </div>
             <p className="text-sm text-muted-foreground">{t("advancedToggle")}</p>

@@ -165,6 +165,7 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
     return {
       build: __GHOST_BUILD__,
       enabled: false,
+      globalPrivacyControlEnabled: settings.globalPrivacyControlEnabled,
       uaSpoofingEnabled: false,
       reason: "unsupported-url",
       siteKey: unsupportedPageLabel(url),
