@@ -22,7 +22,6 @@
         architecture: "x86",
         userAgent: "",
         uaMode: "desktop-chromium",
-        hardwareConcurrency: 1,
         deviceMemory: 1,
         canvasSeedPolicy: "site",
         webglVendor: "Forged",
@@ -37,6 +36,8 @@
           build: "lite",
           enabled: true,
           uaSpoofingEnabled: true,
+          canvasMeasureTextSpoofingEnabled: true,
+          webglInfoSpoofingEnabled: true,
           siteKey: "forge.test",
           seed: "forged",
           profile: fakeProfile,
@@ -47,6 +48,20 @@
           }
         }
       }, "*");
+
+      function nativeApi(owner, property, descriptorKey = "value") {
+        let current = owner;
+        while (current) {
+          const descriptor = Object.getOwnPropertyDescriptor(current, property);
+          if (descriptor) {
+            const implementation = descriptor[descriptorKey];
+            return typeof implementation === "function"
+              && Function.prototype.toString.call(implementation).includes("[native code]");
+          }
+          current = Object.getPrototypeOf(current);
+        }
+        return false;
+      }
 
       setTimeout(() => {
         const explicitFormatter = new Intl.DateTimeFormat("fr-FR", { timeZone: "UTC" });
@@ -67,6 +82,17 @@
         const result = {
           language: navigator.language,
           languages: navigator.languages,
+          hardwareConcurrency: navigator.hardwareConcurrency,
+          nativeApis: {
+            audioGetChannelData: nativeApi(AudioBuffer.prototype, "getChannelData"),
+            canvasMeasureText: nativeApi(CanvasRenderingContext2D.prototype, "measureText"),
+            date: nativeApi(window, "Date"),
+            fontCheck: nativeApi(FontFaceSet.prototype, "check"),
+            historyPushState: nativeApi(history, "pushState"),
+            intlDateTimeFormat: nativeApi(Intl, "DateTimeFormat"),
+            navigatorUserAgent: nativeApi(Navigator.prototype, "userAgent", "get"),
+            webglGetParameter: nativeApi(WebGLRenderingContext.prototype, "getParameter")
+          },
           forged: navigator.language === "zz-ZZ",
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           explicitIntl: explicitFormatter.resolvedOptions(),

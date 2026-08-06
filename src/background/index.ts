@@ -168,6 +168,8 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
       enabled: false,
       globalPrivacyControlEnabled: settings.globalPrivacyControlEnabled,
       uaSpoofingEnabled: false,
+      canvasMeasureTextSpoofingEnabled: false,
+      webglInfoSpoofingEnabled: false,
       reason: "unsupported-url",
       siteKey: unsupportedPageLabel(url),
       seed: stableSeed("", profile.id),
@@ -249,9 +251,7 @@ async function refreshAdvancedOverrideForTab(
   }
   let result: AdvancedResult;
   if (resolved.enabled && settings.advancedEnabled) {
-    result = await applyAdvancedOverrides(tabId, resolved.profile, {
-      userAgent: resolved.uaSpoofingEnabled
-    });
+    result = await applyAdvancedOverrides(tabId, resolved.profile);
   } else {
     await clearAdvancedOverrides(tabId);
     result = { attempted: false, applied: false };

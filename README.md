@@ -1,6 +1,6 @@
 # Ghost
 
-Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, text-metric, and audio fingerprint surface without sending telemetry or using a remote service. Its independent Global Privacy Control switch exposes `navigator.globalPrivacyControl` and sends `Sec-GPC: 1` on HTTP requests.
+Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and text-metric surface without sending telemetry or using a remote service. Its independent Global Privacy Control switch exposes `navigator.globalPrivacyControl` and sends `Sec-GPC: 1` on HTTP requests.
 
 ## Builds
 
@@ -20,11 +20,19 @@ npm run verify
 
 Load `dist/lite` or `dist/advanced` as an unpacked extension in Chromium/Helium.
 
+## Helium compatibility
+
+Ghost leaves AudioContext fingerprint protection and `navigator.hardwareConcurrency` entirely to Helium. For optional Helium flags, mirror the flags you enabled in Ghost's **Helium compatibility** settings; extensions cannot read `helium://flags` directly.
+
+- Enable **Use Helium measureText noise** only with `helium://flags/#fingerprinting-canvas-measuretext-noise`; otherwise Ghost owns `CanvasRenderingContext2D.measureText` protection.
+- Enable **Use Helium WebGL info spoofing** only with `helium://flags/#spoof-webgl-info`; Ghost and Helium must not both spoof the WebGL vendor/renderer.
+- Enable **Use Helium UA reduction** with Helium's `reduced-system-info` or `remove-client-hints` flag; Ghost then leaves User-Agent, UA Client Hints, and platform surfaces unchanged. The Advanced build never stacks a separate CDP User-Agent override on either owner.
+
 Ghost only reports page-level fingerprint protection when its startup payload can be injected synchronously. Enable **Allow User Scripts** in the extension's details (Chrome 138+) or Developer mode on older supported Chromium. Without that authorization Ghost reports **Unprotected** and does not install the asynchronous page-world fallback, because a page could read the native fingerprint before its configured profile arrived. Reopen the popup after granting access to repair registration automatically.
 
 ## Scope
 
-Ghost targets common JavaScript and request-header fingerprinting. It does not claim to hide IP address, DNS, TLS/JA3, HTTP/2, GPU process, browser-kernel, or manual visual signals. Font and emoji rendering cannot be fully replaced from a normal extension. Ghost partitions font exposure and text-measurement outputs, but deliberately leaves Canvas pixel readback and serialization native: post-processing those bytes creates a distinguishable artificial-noise signal, so the native raster fingerprint can remain linkable across sites.
+Ghost targets common JavaScript and request-header fingerprinting. It does not claim to hide IP address, DNS, TLS/JA3, HTTP/2, GPU process, browser-kernel, or manual visual signals. Font and emoji rendering cannot be fully replaced from a normal extension. Ghost partitions font exposure and, unless delegated to Helium, text-measurement outputs. It deliberately leaves Canvas pixel readback and serialization to the browser: post-processing those bytes in the extension creates a distinguishable artificial-noise signal.
 
 ## TODO
 * 预期在0.2.0前实现完整的DNS保护

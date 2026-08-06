@@ -30,6 +30,8 @@ export const DEFAULT_SETTINGS: GhostSettings = {
   globalPrivacyControlEnabled: true,
   advancedEnabled: true,
   disableUserAgentSpoofing: false,
+  disableCanvasMeasureTextSpoofing: false,
+  disableWebglInfoSpoofing: false,
   siteProfiles: {
     [DEFAULT_SITE_RULE]: defaultProfileIdForSiteRule(DEFAULT_SITE_RULE, allProfiles([]), 0)
   },
@@ -58,6 +60,14 @@ export function normalizeSettings(input: unknown): GhostSettings {
     ),
     advancedEnabled: booleanValue(candidate.advancedEnabled, DEFAULT_SETTINGS.advancedEnabled),
     disableUserAgentSpoofing: booleanValue(candidate.disableUserAgentSpoofing, DEFAULT_SETTINGS.disableUserAgentSpoofing),
+    disableCanvasMeasureTextSpoofing: booleanValue(
+      candidate.disableCanvasMeasureTextSpoofing,
+      DEFAULT_SETTINGS.disableCanvasMeasureTextSpoofing
+    ),
+    disableWebglInfoSpoofing: booleanValue(
+      candidate.disableWebglInfoSpoofing,
+      DEFAULT_SETTINGS.disableWebglInfoSpoofing
+    ),
     siteProfiles: ensureDefaultSiteProfile(siteProfiles, profiles, siteNonces),
     siteNonces,
     excludedDomains: normalizeExcludedDomains(candidate.excludedDomains, candidate.excludedDefaultsVersion),
@@ -146,12 +156,16 @@ export function resolveProfile(
   const excluded = isExcludedUrl(url, settings.excludedDomains);
   const enabled = settings.enabled && !temporarilyDisabled && !excluded;
   const uaSpoofingEnabled = enabled && !settings.disableUserAgentSpoofing;
+  const canvasMeasureTextSpoofingEnabled = enabled && !settings.disableCanvasMeasureTextSpoofing;
+  const webglInfoSpoofingEnabled = enabled && !settings.disableWebglInfoSpoofing;
 
   return {
     build,
     enabled,
     globalPrivacyControlEnabled: settings.globalPrivacyControlEnabled,
     uaSpoofingEnabled,
+    canvasMeasureTextSpoofingEnabled,
+    webglInfoSpoofingEnabled,
     reason: !settings.enabled ? "global-disabled" : temporarilyDisabled ? "temporary-disabled" : excluded ? "excluded-domain" : undefined,
     siteKey,
     seed: stableSeed(siteKey, profile.id),
@@ -257,10 +271,13 @@ function isString(value: unknown): value is string {
 
 function normalizeProfile(profile: Profile): Profile {
   const fallback = findProfile(undefined, []);
+  const { hardwareConcurrency: _legacyHardwareConcurrency, ...currentProfile } = profile as Profile & {
+    hardwareConcurrency?: unknown;
+  };
   const locale = normalizeLocale(profile.locale, fallback.locale);
   return {
     ...fallback,
-    ...profile,
+    ...currentProfile,
     id: sanitizeIdentifier(profile.id),
     label: boundedString(profile.label, fallback.label, 256),
     locale,
@@ -275,7 +292,6 @@ function normalizeProfile(profile: Profile): Profile {
     architecture: normalizeArchitecture(profile.architecture),
     userAgent: sanitizeUserAgent(profile.userAgent),
     uaMode: profile.uaMode === "native" ? "native" : "desktop-chromium",
-    hardwareConcurrency: Math.min(256, Math.max(1, Math.round(finiteNumber(profile.hardwareConcurrency, fallback.hardwareConcurrency)))),
     deviceMemory: normalizeDeviceMemory(profile.deviceMemory, fallback.deviceMemory),
     canvasSeedPolicy: "site",
     webglVendor: boundedString(profile.webglVendor, fallback.webglVendor, 1024),

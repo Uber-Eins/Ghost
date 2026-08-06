@@ -12,6 +12,7 @@ import {
   PRESET_PROFILES,
   SUPPORTED_TIMEZONES,
   canvasFontHasBlockedFamily,
+  constructDateWithNewTarget,
   dateFromZonedLocalParts,
   exclusionAppliesToSiteKey,
   exclusionsForSiteToggle,
@@ -545,28 +546,27 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     const firstProfile = { ...PRESET_PROFILES[0], userAgent: "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36" };
     const secondProfile = { ...PRESET_PROFILES[1], userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" };
     const [first, second] = await Promise.all([
-      applyAdvancedOverrides(7, firstProfile, { userAgent: true }),
-      applyAdvancedOverrides(7, secondProfile, { userAgent: true })
+      applyAdvancedOverrides(7, firstProfile),
+      applyAdvancedOverrides(7, secondProfile)
     ]);
     assert.equal(first.applied, true);
     assert.equal(second.applied, true);
     assert.equal(attachCount, 1);
     const userAgentCalls = calls.filter((call) => call.method === "Emulation.setUserAgentOverride");
-    assert.match(userAgentCalls.at(-1).params.userAgent, /Chrome\/152/);
+    assert.deepEqual(userAgentCalls, []);
     assert.deepEqual(calls.filter((call) => call.method.startsWith("Runtime.")), []);
 
-    const reset = await applyAdvancedOverrides(7, secondProfile, { userAgent: false });
+    const reset = await applyAdvancedOverrides(7, secondProfile);
     assert.equal(reset.applied, true);
-    assert.equal(attachCount, 2);
-    assert.equal(calls.filter((call) => call.method === "Emulation.setUserAgentOverride").length, 2);
+    assert.equal(attachCount, 1);
 
     failMethod = "Emulation.setTimezoneOverride";
-    const failed = await applyAdvancedOverrides(7, firstProfile, { userAgent: true });
+    const failed = await applyAdvancedOverrides(7, firstProfile);
     assert.equal(failed.applied, false);
     assert.match(failed.error, /forced/);
     assert.equal(attached, false);
 
-    const recovered = await applyAdvancedOverrides(7, firstProfile, { userAgent: true });
+    const recovered = await applyAdvancedOverrides(7, firstProfile);
     assert.equal(recovered.applied, true);
     await clearAdvancedOverrides(7);
     assert.equal(attached, false);
@@ -606,6 +606,31 @@ test("numeric date construction can target a spoofed timezone", () => {
   assert.equal(values.day, "03");
   assert.equal(values.hour, "12");
   assert.equal(values.minute, "30");
+});
+
+test("wrapped Date construction preserves derived Date subclasses", () => {
+  function WrappedDate(...args) {
+    return constructDateWithNewTarget(Date, args, new.target);
+  }
+  Object.setPrototypeOf(WrappedDate, Date);
+  WrappedDate.prototype = Date.prototype;
+
+  class OutlookDate extends WrappedDate {
+    constructor(value) {
+      super(value);
+      this.utcMs = this.getTime();
+    }
+
+    get adjusted() {
+      return new Date(this.utcMs + 60 * 60 * 1000);
+    }
+  }
+
+  const date = new OutlookDate(Date.UTC(2026, 6, 25, 5, 48, 13));
+  assert.ok(date instanceof Date);
+  assert.ok(date instanceof OutlookDate);
+  assert.equal(date.utcMs, Date.UTC(2026, 6, 25, 5, 48, 13));
+  assert.equal(date.adjusted.toISOString(), "2026-07-25T06:48:13.000Z");
 });
 
 test("profile user-agent keeps the native Chromium major", () => {
@@ -713,7 +738,7 @@ test("settings migration bounds profile values exposed to browser APIs", () => {
   assert.equal(profile.longitude, -180);
   assert.equal(profile.accuracy, 0);
   assert.equal(profile.platform, PRESET_PROFILES[0].platform);
-  assert.equal(profile.hardwareConcurrency, 256);
+  assert.equal("hardwareConcurrency" in profile, false);
   assert.equal(profile.deviceMemory, 2);
   assert.equal(profile.userAgent, "Mozilla/5.0 Chrome/151.0");
 });

@@ -47,7 +47,7 @@ type ProfileDialogState = {
   draft: Profile;
 };
 
-type NumberFieldKey = keyof Pick<Profile, "latitude" | "longitude" | "accuracy" | "hardwareConcurrency" | "deviceMemory">;
+type NumberFieldKey = keyof Pick<Profile, "latitude" | "longitude" | "accuracy" | "deviceMemory">;
 type NumberFieldText = Record<NumberFieldKey, string>;
 
 const root = createRoot(document.getElementById("root") ?? document.body);
@@ -312,17 +312,60 @@ function OptionsApp(): React.ReactElement {
             onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
             aria-label={t("advancedToggle")}
           />
+        </div>
+      </section>
+
+      <section className="glass-panel">
+        <SectionTitle title={t("heliumCompatibility")} description={t("heliumCompatibilitySubtitle")} />
+        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4 md:col-span-2">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("heliumManagedAudioHardware")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("heliumManagedAudioHardwareSubtitle")}</p>
+          </div>
           <div className="rounded-lg border border-border/70 bg-background/45 p-4">
             <div className="mb-1 flex items-center gap-2 text-sm font-medium">
               <Activity className="h-4 w-4 text-primary" />
-              {t("disableUserAgentSpoofing")}
+              {t("useHeliumCanvasMeasureText")}
             </div>
-            <p className="text-sm text-muted-foreground">{t("disableUserAgentSpoofingSubtitle")}</p>
+            <p className="text-sm text-muted-foreground">{t("useHeliumCanvasMeasureTextSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.disableCanvasMeasureTextSpoofing}
+            onCheckedChange={(checked) => updateSettings((current) => ({
+              ...current,
+              disableCanvasMeasureTextSpoofing: checked
+            }))}
+            aria-label={t("useHeliumCanvasMeasureText")}
+          />
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("useHeliumWebglInfo")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("useHeliumWebglInfoSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.disableWebglInfoSpoofing}
+            onCheckedChange={(checked) => updateSettings((current) => ({
+              ...current,
+              disableWebglInfoSpoofing: checked
+            }))}
+            aria-label={t("useHeliumWebglInfo")}
+          />
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("useHeliumUaReduction")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("useHeliumUaReductionSubtitle")}</p>
           </div>
           <Switch
             checked={settings.disableUserAgentSpoofing}
             onCheckedChange={(checked) => updateSettings((current) => ({ ...current, disableUserAgentSpoofing: checked }))}
-            aria-label={t("disableUserAgentSpoofing")}
+            aria-label={t("useHeliumUaReduction")}
           />
         </div>
       </section>
@@ -338,6 +381,7 @@ function OptionsApp(): React.ReactElement {
         <ProfilesTable
           profiles={profiles}
           hideUserAgentFields={settings.disableUserAgentSpoofing}
+          hideWebglFields={settings.disableWebglInfoSpoofing}
           onEdit={openEditProfile}
           onDelete={deleteProfile}
         />
@@ -454,6 +498,7 @@ function OptionsApp(): React.ReactElement {
           <ProfileEditorDialog
             state={profileDialog}
             hideUserAgentFields={settings.disableUserAgentSpoofing}
+            hideWebglFields={settings.disableWebglInfoSpoofing}
             onDraftChange={(draft) => setProfileDialog((current) => current ? { ...current, draft } : current)}
             onCancel={() => setProfileDialog(null)}
             onSave={saveProfileDraft}
@@ -476,11 +521,13 @@ function SectionTitle({ title, description }: { title: string; description: stri
 function ProfilesTable({
   profiles,
   hideUserAgentFields,
+  hideWebglFields,
   onEdit,
   onDelete
 }: {
   profiles: Profile[];
   hideUserAgentFields: boolean;
+  hideWebglFields: boolean;
   onEdit: (profile: Profile) => void;
   onDelete: (profile: Profile) => void;
 }): React.ReactElement {
@@ -492,8 +539,8 @@ function ProfilesTable({
           <TableHead>{t("locale")}</TableHead>
           <TableHead>{t("timezoneLocation")}</TableHead>
           {!hideUserAgentFields ? <TableHead>{t("platform")}</TableHead> : null}
-          <TableHead>{t("hardwareSummary")}</TableHead>
-          <TableHead>{t("webglSummary")}</TableHead>
+          <TableHead>{t("deviceMemory")}</TableHead>
+          {!hideWebglFields ? <TableHead>{t("webglSummary")}</TableHead> : null}
           <TableHead className="w-36 text-right">{t("actions")}</TableHead>
         </TableRow>
       </TableHeader>
@@ -520,13 +567,13 @@ function ProfilesTable({
             </TableCell>
             {!hideUserAgentFields ? <TableCell>{platformLabel(profile.platform)}</TableCell> : null}
             <TableCell>
-              <span className="text-sm">{profile.hardwareConcurrency} CPU / {profile.deviceMemory} GB</span>
+              <span className="text-sm">{profile.deviceMemory} GB</span>
             </TableCell>
-            <TableCell>
+            {!hideWebglFields ? <TableCell>
               <div className="max-w-56 truncate text-sm" title={`${profile.webglVendor} ${profile.webglRenderer}`}>
                 {profile.webglVendor}
               </div>
-            </TableCell>
+            </TableCell> : null}
             <TableCell className="text-right">
               <div className="flex justify-end gap-2">
                 <Button variant="outline" size="sm" onClick={() => onEdit(profile)}>
@@ -549,12 +596,14 @@ function ProfilesTable({
 function ProfileEditorDialog({
   state,
   hideUserAgentFields,
+  hideWebglFields,
   onDraftChange,
   onCancel,
   onSave
 }: {
   state: ProfileDialogState;
   hideUserAgentFields: boolean;
+  hideWebglFields: boolean;
   onDraftChange: (profile: Profile) => void;
   onCancel: () => void;
   onSave: (profile: Profile) => void;
@@ -708,15 +757,6 @@ function ProfileEditorDialog({
         <details className="rounded-lg border border-border/70 bg-background/40 p-4">
           <summary className="cursor-pointer text-sm font-medium">{t("advancedSettings")}</summary>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label={t("hardwareConcurrency")}>
-              <Input
-                aria-label={t("hardwareConcurrency")}
-                inputMode="numeric"
-                value={numberText.hardwareConcurrency}
-                onBlur={() => commitNumberText("hardwareConcurrency")}
-                onChange={(event) => updateNumberText("hardwareConcurrency", event.target.value)}
-              />
-            </Field>
             <Field label={t("deviceMemory")}>
               <Input
                 aria-label={t("deviceMemory")}
@@ -731,12 +771,16 @@ function ProfileEditorDialog({
                 <Textarea aria-label={t("userAgent")} value={draft.userAgent} onChange={(event) => update("userAgent", event.target.value)} />
               </Field>
             ) : null}
-            <Field label={t("webglVendor")}>
-              <Input aria-label={t("webglVendor")} value={draft.webglVendor} onChange={(event) => update("webglVendor", event.target.value)} />
-            </Field>
-            <Field label={t("webglRenderer")} className="md:col-span-2">
-              <Textarea aria-label={t("webglRenderer")} value={draft.webglRenderer} onChange={(event) => update("webglRenderer", event.target.value)} />
-            </Field>
+            {!hideWebglFields ? (
+              <>
+                <Field label={t("webglVendor")}>
+                  <Input aria-label={t("webglVendor")} value={draft.webglVendor} onChange={(event) => update("webglVendor", event.target.value)} />
+                </Field>
+                <Field label={t("webglRenderer")} className="md:col-span-2">
+                  <Textarea aria-label={t("webglRenderer")} value={draft.webglRenderer} onChange={(event) => update("webglRenderer", event.target.value)} />
+                </Field>
+              </>
+            ) : null}
           </div>
         </details>
       </div>
@@ -771,7 +815,6 @@ function numberTextFromProfile(profile: Profile): NumberFieldText {
     latitude: String(profile.latitude),
     longitude: String(profile.longitude),
     accuracy: String(profile.accuracy),
-    hardwareConcurrency: String(profile.hardwareConcurrency),
     deviceMemory: String(profile.deviceMemory)
   };
 }
@@ -788,7 +831,6 @@ function withRawProfileEdits(profile: Profile, languageText: string, numberText:
     latitude: numberFromText(numberText.latitude, profile.latitude),
     longitude: numberFromText(numberText.longitude, profile.longitude),
     accuracy: numberFromText(numberText.accuracy, profile.accuracy),
-    hardwareConcurrency: numberFromText(numberText.hardwareConcurrency, profile.hardwareConcurrency),
     deviceMemory: numberFromText(numberText.deviceMemory, profile.deviceMemory)
   };
 }
@@ -865,7 +907,6 @@ function normalizeProfile(profile: Profile): Profile {
     latitude: finiteOr(profile.latitude, 0),
     longitude: finiteOr(profile.longitude, 0),
     accuracy: finiteOr(profile.accuracy, 80),
-    hardwareConcurrency: Math.max(1, Math.round(finiteOr(profile.hardwareConcurrency, 8))),
     deviceMemory: Math.max(1, Math.round(finiteOr(profile.deviceMemory, 8))),
     webglVendor: profile.webglVendor.trim(),
     webglRenderer: profile.webglRenderer.trim()

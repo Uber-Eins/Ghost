@@ -1,4 +1,3 @@
-import { navigatorPlatformForProfile, runtimeUserAgent, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
 import type { Profile } from "../shared/types";
 
 const PROTOCOL_VERSION = "1.3";
@@ -27,28 +26,20 @@ export interface AdvancedResult {
   error?: string;
 }
 
-export interface AdvancedOverrideOptions {
-  userAgent: boolean;
-}
-
-export async function applyAdvancedOverrides(tabId: number, profile: Profile, options: AdvancedOverrideOptions): Promise<AdvancedResult> {
+export async function applyAdvancedOverrides(tabId: number, profile: Profile): Promise<AdvancedResult> {
   if (!chrome.debugger) {
     return { attempted: false, applied: false };
   }
 
-  return enqueueDebuggerOperation(tabId, () => applyAdvancedOverridesNow(tabId, profile, options));
+  return enqueueDebuggerOperation(tabId, () => applyAdvancedOverridesNow(tabId, profile));
 }
 
-async function applyAdvancedOverridesNow(tabId: number, profile: Profile, options: AdvancedOverrideOptions): Promise<AdvancedResult> {
+async function applyAdvancedOverridesNow(tabId: number, profile: Profile): Promise<AdvancedResult> {
   const target: Debuggee = { tabId };
-  const nativeUserAgent = runtimeUserAgent();
   let acquiredSession = false;
   try {
     await attachIfNeeded(target, tabId);
     acquiredSession = true;
-    if (!options.userAgent) {
-      await resetDebuggerSession(target, tabId);
-    }
     await sendCommand(target, "Emulation.setGeolocationOverride", {
       latitude: profile.latitude,
       longitude: profile.longitude,
@@ -56,18 +47,9 @@ async function applyAdvancedOverridesNow(tabId: number, profile: Profile, option
     });
     await sendCommand(target, "Emulation.setTimezoneOverride", { timezoneId: profile.timezoneId });
     await sendCommand(target, "Emulation.setLocaleOverride", { locale: profile.intlLocale || profile.locale });
-    if (options.userAgent) {
-      const metadata = userAgentMetadataForProfile(profile, nativeUserAgent);
-      const params: Record<string, unknown> = {
-        userAgent: userAgentForProfile(profile, nativeUserAgent),
-        acceptLanguage: profile.acceptLanguage,
-        platform: navigatorPlatformForProfile(profile, nativeUserAgent)
-      };
-      if (metadata) {
-        params.userAgentMetadata = metadata;
-      }
-      await sendCommand(target, "Emulation.setUserAgentOverride", params);
-    }
+    // UA and Client Hints have one owner: either Ghost's page/header layer or
+    // Helium. A second CDP override is observable and makes Turnstile reject an
+    // otherwise valid browser session with the generic 600010 challenge error.
     return { attempted: true, applied: true };
   } catch (error) {
     await clearAndDetachOwnedSession(target, tabId, acquiredSession);
@@ -77,24 +59,6 @@ async function applyAdvancedOverridesNow(tabId: number, profile: Profile, option
       error: error instanceof Error ? error.message : String(error)
     };
   }
-}
-
-async function resetDebuggerSession(target: Debuggee, tabId: number): Promise<void> {
-  let detachError: unknown;
-  try {
-    await chrome.debugger.detach(target);
-  } catch (error) {
-    detachError = error;
-  } finally {
-    ownedDebuggerTabs.delete(tabId);
-    await persistOwnedDebuggerTabs();
-  }
-
-  if (detachError) {
-    throw detachError;
-  }
-
-  await attachIfNeeded(target, tabId);
 }
 
 export async function clearAdvancedOverrides(tabId: number): Promise<void> {

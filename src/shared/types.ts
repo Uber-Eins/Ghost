@@ -17,7 +17,6 @@ export interface Profile {
   architecture: string;
   userAgent: string;
   uaMode: UaMode;
-  hardwareConcurrency: number;
   deviceMemory: number;
   canvasSeedPolicy: "site";
   webglVendor: string;
@@ -29,6 +28,8 @@ export interface GhostSettings {
   globalPrivacyControlEnabled: boolean;
   advancedEnabled: boolean;
   disableUserAgentSpoofing: boolean;
+  disableCanvasMeasureTextSpoofing: boolean;
+  disableWebglInfoSpoofing: boolean;
   siteProfiles: Record<string, string>;
   siteNonces: Record<string, number>;
   excludedDomains: string[];
@@ -43,6 +44,8 @@ export interface ResolvedProfile {
   enabled: boolean;
   globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
+  canvasMeasureTextSpoofingEnabled: boolean;
+  webglInfoSpoofingEnabled: boolean;
   reason?: "global-disabled" | "temporary-disabled" | "excluded-domain" | "unsupported-url";
   siteKey: string;
   seed: string;

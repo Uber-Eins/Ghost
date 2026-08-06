@@ -1,5 +1,6 @@
 import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
+import { constructDateWithNewTarget } from "../shared/date-constructor";
 import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
@@ -23,6 +24,8 @@ interface GhostState {
   enabled: boolean;
   globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
+  canvasMeasureTextSpoofingEnabled: boolean;
+  webglInfoSpoofingEnabled: boolean;
   siteKey: string;
   seed: string;
   profile: Profile;
@@ -81,7 +84,6 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "userAgent",
   "appVersion",
   "userAgentData",
-  "hardwareConcurrency",
   "deviceMemory",
   "globalPrivacyControl"
 ]);
@@ -98,16 +100,26 @@ const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExclude
 const initialGlobalPrivacyControlEnabled = bootstrapProfile?.globalPrivacyControlEnabled
   ?? DEFAULT_SETTINGS.globalPrivacyControlEnabled;
 const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled ?? initialEnabled;
+const initialCanvasMeasureTextSpoofingEnabled = bootstrapProfile?.canvasMeasureTextSpoofingEnabled ?? initialEnabled;
+const initialWebglInfoSpoofingEnabled = bootstrapProfile?.webglInfoSpoofingEnabled ?? initialEnabled;
 const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
 const initialSeed = bootstrapProfile?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
 const state: GhostState = {
   enabled: initialEnabled,
   globalPrivacyControlEnabled: initialGlobalPrivacyControlEnabled,
   uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
+  canvasMeasureTextSpoofingEnabled: initialCanvasMeasureTextSpoofingEnabled,
+  webglInfoSpoofingEnabled: initialWebglInfoSpoofingEnabled,
   siteKey: initialSiteKey,
   profile: fallbackProfile,
   seed: initialSeed
 };
+const installedSurfaceOwnership = Object.freeze({
+  profileProtection: state.enabled,
+  userAgent: state.uaSpoofingEnabled,
+  canvasMeasureText: state.canvasMeasureTextSpoofingEnabled,
+  webglInfo: state.webglInfoSpoofingEnabled
+});
 const initialProfileSignature = profileSignature(fallbackProfile);
 const intlInstanceMetadata = new WeakMap<object, IntlInstanceMetadata>();
 const bridgeNonce = createNonce();
@@ -138,24 +150,36 @@ if (initialPageUrl) {
 
 function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
   const shouldReload = reloadOnProfileChangeRequestIds.delete(requestId) && profileChanged(resolved);
+  const surfaceOwnershipChanged = (
+    installedSurfaceOwnership.profileProtection !== resolved.enabled
+    || installedSurfaceOwnership.userAgent !== resolved.uaSpoofingEnabled
+    || installedSurfaceOwnership.canvasMeasureText !== resolved.canvasMeasureTextSpoofingEnabled
+    || installedSurfaceOwnership.webglInfo !== resolved.webglInfoSpoofingEnabled
+  );
   state.enabled = resolved.enabled;
   state.globalPrivacyControlEnabled = resolved.globalPrivacyControlEnabled;
   state.uaSpoofingEnabled = resolved.uaSpoofingEnabled;
+  state.canvasMeasureTextSpoofingEnabled = resolved.canvasMeasureTextSpoofingEnabled;
+  state.webglInfoSpoofingEnabled = resolved.webglInfoSpoofingEnabled;
   state.siteKey = resolved.siteKey;
   state.profile = resolved.profile;
   state.seed = resolved.seed;
   cachedUserAgentData = null;
   cachedLanguages = null;
-  syncUserAgentDataDescriptor();
   hasResolvedProfile = true;
-  if (shouldReload) {
+  if (shouldReload || surfaceOwnershipChanged) {
     location.reload();
     return;
+  }
+  if (installedSurfaceOwnership.userAgent) {
+    syncUserAgentDataDescriptor();
   }
   if (
     initialEnabled !== resolved.enabled
     || initialGlobalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || initialUserAgentSpoofingEnabled !== resolved.uaSpoofingEnabled
+    || initialCanvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
+    || initialWebglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
     || initialSiteKey !== resolved.siteKey
     || initialSeed !== resolved.seed
     || initialProfileSignature !== profileSignature(resolved.profile)
@@ -170,19 +194,28 @@ function install(): void {
   }
   (window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled = true;
 
+  patchGlobalPrivacyControl();
+  if (!installedSurfaceOwnership.profileProtection) {
+    // Excluded documents (including Turnstile challenge frames) must keep
+    // profile-related prototypes native. GPC remains an independent signal.
+    return;
+  }
   patchNavigator();
   patchIframeNavigatorAccess();
   patchIntl();
   patchDate();
   patchGeolocation();
   patchFontFaceSet();
-  patchCanvas();
+  if (installedSurfaceOwnership.canvasMeasureText) {
+    patchCanvas();
+  }
   patchWebGL();
-  patchAudio();
 }
 
 function connectBridge(): void {
-  installNavigationRefresh();
+  if (installedSurfaceOwnership.profileProtection) {
+    installNavigationRefresh();
+  }
   requestBridgeConnection();
 }
 
@@ -334,7 +367,6 @@ function profileSignature(profile: Profile): string {
     profile.architecture,
     profile.userAgent,
     profile.uaMode,
-    profile.hardwareConcurrency,
     profile.deviceMemory,
     profile.webglVendor,
     profile.webglRenderer
@@ -346,6 +378,8 @@ function profileChanged(resolved: ResolvedProfile): boolean {
     state.enabled !== resolved.enabled
     || state.globalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || state.uaSpoofingEnabled !== resolved.uaSpoofingEnabled
+    || state.canvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
+    || state.webglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
     || state.siteKey !== resolved.siteKey
     || state.seed !== resolved.seed
     || profileSignature(state.profile) !== profileSignature(resolved.profile)
@@ -425,7 +459,6 @@ function snapshotNavigator(): Record<string, unknown> {
     userAgent: nav.userAgent,
     appVersion: nav.appVersion,
     userAgentData: nav.userAgentData,
-    hardwareConcurrency: nav.hardwareConcurrency,
     deviceMemory: nav.deviceMemory,
     globalPrivacyControl: nav.globalPrivacyControl
   };
@@ -464,22 +497,26 @@ function spoofingBaseUserAgentString(): string {
   return String(nativeNavigator.userAgent ?? "");
 }
 
-function patchNavigator(): void {
+function patchGlobalPrivacyControl(): void {
   defineNavigatorGetter("globalPrivacyControl", function globalPrivacyControl() {
     if (state.globalPrivacyControlEnabled) {
       return true;
     }
     return Boolean(readNativeNavigatorProperty("globalPrivacyControl"));
   });
+}
+
+function patchNavigator(): void {
   defineNavigatorGetter("language", () => state.enabled ? state.profile.locale : readNativeNavigatorProperty("language"));
   defineNavigatorGetter("languages", () => state.enabled ? profileLanguages() : readNativeNavigatorProperty("languages"));
-  defineNavigatorGetter("platform", () => state.uaSpoofingEnabled ? navigatorPlatformForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("platform"));
-  defineNavigatorGetter("vendor", () => state.uaSpoofingEnabled ? navigatorVendorForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("vendor"));
-  defineNavigatorGetter("userAgent", () => state.uaSpoofingEnabled ? userAgentForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("userAgent"));
-  defineNavigatorGetter("appVersion", () => state.uaSpoofingEnabled ? appVersionForProfile(state.profile, spoofingBaseUserAgentString()) : readNativeNavigatorProperty("appVersion"));
-  defineNavigatorGetter("hardwareConcurrency", () => state.enabled ? state.profile.hardwareConcurrency : readNativeNavigatorProperty("hardwareConcurrency"));
   defineNavigatorGetter("deviceMemory", () => state.enabled ? state.profile.deviceMemory : readNativeNavigatorProperty("deviceMemory"));
-  syncUserAgentDataDescriptor();
+  if (installedSurfaceOwnership.userAgent) {
+    defineNavigatorGetter("platform", () => navigatorPlatformForProfile(state.profile, spoofingBaseUserAgentString()));
+    defineNavigatorGetter("vendor", () => navigatorVendorForProfile(state.profile, spoofingBaseUserAgentString()));
+    defineNavigatorGetter("userAgent", () => userAgentForProfile(state.profile, spoofingBaseUserAgentString()));
+    defineNavigatorGetter("appVersion", () => appVersionForProfile(state.profile, spoofingBaseUserAgentString()));
+    syncUserAgentDataDescriptor();
+  }
 }
 
 function patchIframeNavigatorAccess(): void {
@@ -552,14 +589,11 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
     const properties = [
       "language",
       "languages",
-      "platform",
-      "vendor",
-      "userAgent",
-      "appVersion",
-      "userAgentData",
-      "hardwareConcurrency",
       "deviceMemory",
-      "globalPrivacyControl"
+      "globalPrivacyControl",
+      ...(installedSurfaceOwnership.userAgent
+        ? ["platform", "vendor", "userAgent", "appVersion", "userAgentData"]
+        : [])
     ];
     for (const property of properties) {
       const mainNavigator = navigator as unknown as Record<string, unknown>;
@@ -928,7 +962,7 @@ function patchDate(): void {
     if (!new.target) {
       return new NativeDate().toString();
     }
-    return constructDate(args);
+    return constructDate(args, new.target);
   }
   Object.setPrototypeOf(GhostDate, NativeDate);
   GhostDate.prototype = NativeDate.prototype;
@@ -953,9 +987,9 @@ function patchDate(): void {
   }
 }
 
-function constructDate(args: unknown[]): Date {
+function constructDate(args: unknown[], newTarget: Function): Date {
   if (state.enabled && args.length >= 2) {
-    return dateFromZonedLocalParts(
+    const date = dateFromZonedLocalParts(
       state.profile.timezoneId,
       Number(args[0]),
       Number(args[1]),
@@ -966,26 +1000,10 @@ function constructDate(args: unknown[]): Date {
       args.length >= 7 ? Number(args[6]) : 0,
       NativeIntl.DateTimeFormat
     );
+    return constructDateWithNewTarget(NativeDate, [date.getTime()], newTarget);
   }
 
-  switch (args.length) {
-    case 0:
-      return new NativeDate();
-    case 1:
-      return new NativeDate(args[0] as string | number | Date);
-    case 2:
-      return new NativeDate(args[0] as number, args[1] as number);
-    case 3:
-      return new NativeDate(args[0] as number, args[1] as number, args[2] as number);
-    case 4:
-      return new NativeDate(args[0] as number, args[1] as number, args[2] as number, args[3] as number);
-    case 5:
-      return new NativeDate(args[0] as number, args[1] as number, args[2] as number, args[3] as number, args[4] as number);
-    case 6:
-      return new NativeDate(args[0] as number, args[1] as number, args[2] as number, args[3] as number, args[4] as number, args[5] as number);
-    default:
-      return new NativeDate(args[0] as number, args[1] as number, args[2] as number, args[3] as number, args[4] as number, args[5] as number, args[6] as number);
-  }
+  return constructDateWithNewTarget(NativeDate, args, newTarget);
 }
 
 function withTimeZone(options?: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
@@ -1124,7 +1142,7 @@ function patchCanvas(): void {
     Object.defineProperty(contextPrototype, "measureText", {
       configurable: true,
       value: function measureText(this: CanvasRenderingContext2D, text: string) {
-        if (!state.enabled) {
+        if (!state.canvasMeasureTextSpoofingEnabled) {
           return nativeMeasureText.call(this, text);
         }
         const font = this.font;
@@ -1184,30 +1202,32 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
   const nativeGetExtension = prototype.getExtension;
   const nativeReadPixels = prototype.readPixels as (...args: unknown[]) => unknown;
 
-  Object.defineProperty(prototype, "getParameter", {
-    configurable: true,
-    value: function getParameter(this: WebGLRenderingContext, parameter: number) {
-      if (state.enabled) {
-        if (parameter === 0x9245 || parameter === 0x1f00) {
-          return state.profile.webglVendor;
+  if (installedSurfaceOwnership.webglInfo) {
+    Object.defineProperty(prototype, "getParameter", {
+      configurable: true,
+      value: function getParameter(this: WebGLRenderingContext, parameter: number) {
+        if (state.webglInfoSpoofingEnabled) {
+          if (parameter === 0x9245 || parameter === 0x1f00) {
+            return state.profile.webglVendor;
+          }
+          if (parameter === 0x9246 || parameter === 0x1f01) {
+            return state.profile.webglRenderer;
+          }
         }
-        if (parameter === 0x9246 || parameter === 0x1f01) {
-          return state.profile.webglRenderer;
-        }
+        return nativeGetParameter.call(this, parameter);
       }
-      return nativeGetParameter.call(this, parameter);
-    }
-  });
+    });
 
-  Object.defineProperty(prototype, "getExtension", {
-    configurable: true,
-    value: function getExtension(this: WebGLRenderingContext, name: string) {
-      if (state.enabled && name === "WEBGL_debug_renderer_info") {
-        return { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+    Object.defineProperty(prototype, "getExtension", {
+      configurable: true,
+      value: function getExtension(this: WebGLRenderingContext, name: string) {
+        if (state.webglInfoSpoofingEnabled && name === "WEBGL_debug_renderer_info") {
+          return { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+        }
+        return nativeGetExtension.call(this, name);
       }
-      return nativeGetExtension.call(this, name);
-    }
-  });
+    });
+  }
 
   Object.defineProperty(prototype, "readPixels", {
     configurable: true,
@@ -1218,61 +1238,6 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
         if (pixels && "length" in pixels) {
           noiseArrayLike(pixels as NumericArray, "webgl");
         }
-      }
-      return result;
-    }
-  });
-}
-
-function patchAudio(): void {
-  const noisedArrays = new WeakSet<object>();
-  const audioBufferPrototype = window.AudioBuffer?.prototype;
-  if (audioBufferPrototype) {
-    const nativeGetChannelData = audioBufferPrototype.getChannelData;
-    const nativeCopyFromChannel = audioBufferPrototype.copyFromChannel;
-    Object.defineProperty(audioBufferPrototype, "getChannelData", {
-      configurable: true,
-      value: function getChannelData(this: AudioBuffer, channel: number) {
-        const data = nativeGetChannelData.call(this, channel);
-        if (state.enabled && !noisedArrays.has(data)) {
-          noiseArrayLike(data as Float32Array<ArrayBufferLike>, `audio:${channel}`);
-          noisedArrays.add(data);
-        }
-        return data;
-      }
-    });
-    Object.defineProperty(audioBufferPrototype, "copyFromChannel", {
-      configurable: true,
-      value: function copyFromChannel(this: AudioBuffer, destination: Float32Array<ArrayBufferLike>, channelNumber: number, bufferOffset?: number) {
-        const result = nativeCopyFromChannel.call(this, destination as Float32Array<ArrayBuffer>, channelNumber, bufferOffset);
-        if (state.enabled) {
-          noiseArrayLike(destination, `copyFromChannel:${channelNumber}`);
-        }
-        return result;
-      }
-    });
-  }
-
-  const analyserPrototype = window.AnalyserNode?.prototype;
-  if (analyserPrototype) {
-    patchAnalyserMethod(analyserPrototype, "getFloatFrequencyData");
-    patchAnalyserMethod(analyserPrototype, "getByteFrequencyData");
-    patchAnalyserMethod(analyserPrototype, "getByteTimeDomainData");
-    patchAnalyserMethod(analyserPrototype, "getFloatTimeDomainData");
-  }
-}
-
-function patchAnalyserMethod(prototype: AnalyserNode, method: keyof AnalyserNode): void {
-  const nativeMethod = prototype[method];
-  if (typeof nativeMethod !== "function") {
-    return;
-  }
-  Object.defineProperty(prototype, method, {
-    configurable: true,
-    value: function analyserMethod(this: AnalyserNode, array: Float32Array | Uint8Array) {
-      const result = (nativeMethod as (this: AnalyserNode, array: Float32Array | Uint8Array) => void).call(this, array);
-      if (state.enabled) {
-        noiseArrayLike(array, `analyser:${String(method)}`);
       }
       return result;
     }
