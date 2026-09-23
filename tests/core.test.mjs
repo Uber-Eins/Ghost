@@ -1141,6 +1141,7 @@ test("webgpu adapter info follows the profile's WebGL renderer", () => {
 test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () => {
   const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
   assert.doesNotMatch(pageMain, /parameter === (?:0x1f00|0x1f01|7936|7937)/i);
+  assert.doesNotMatch(pageMain, /\breadPixels\b/);
   assert.match(pageMain, /parameter === (?:0x9245|37445)/i);
   assert.match(pageMain, /GPUAdapterInfo/);
   assert.match(pageMain, /importScripts\(/);

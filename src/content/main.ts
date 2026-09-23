@@ -1,4 +1,4 @@
-import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
+import { stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
 import { constructDateWithNewTarget } from "../shared/date-constructor";
 import { isSupportedPageUrl } from "../shared/internal";
@@ -17,8 +17,6 @@ import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../sh
 declare const __GHOST_CHANNEL__: string;
 declare const __GHOST_BUILD__: BuildTarget;
 declare const __GHOST_RELATED_ONLY__: boolean;
-
-type NumericArray = Uint8Array<ArrayBufferLike> | Uint8ClampedArray<ArrayBufferLike> | Float32Array<ArrayBufferLike>;
 
 interface GhostState {
   enabled: boolean;
@@ -215,8 +213,8 @@ function install(): void {
   if (installedSurfaceOwnership.canvasMeasureText) {
     patchCanvas();
   }
-  patchWebGL();
   if (installedSurfaceOwnership.webglInfo) {
+    patchWebGL();
     patchWebGPU();
     patchWorkers();
   }
@@ -1277,18 +1275,32 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
     return;
   }
   const nativeGetParameter = prototype.getParameter;
-  const nativeGetExtension = prototype.getExtension;
-  const nativeReadPixels = prototype.readPixels as (...args: unknown[]) => unknown;
-
-  if (installedSurfaceOwnership.webglInfo) {
-    Object.defineProperty(prototype, "getParameter", {
-      configurable: true,
-      value: function getParameter(this: WebGLRenderingContext, parameter: number) {
-        // Only the WEBGL_debug_renderer_info pair carries hardware identity.
-        // Chromium answers the plain VENDOR/RENDERER enums (0x1F00/0x1F01)
-        // with the fixed "WebKit" / "WebKit WebGL" strings on every platform,
-        // so those must stay native or the page sees an impossible browser.
-        if (state.webglInfoSpoofingEnabled) {
+  Object.defineProperty(prototype, "getParameter", {
+    configurable: true,
+    writable: true,
+    value: maskAsNative(new Proxy(nativeGetParameter, {
+      apply(target, thisArgument, argumentsList) {
+        let parameter = argumentsList[0];
+        if (parameter !== null && (typeof parameter === "object" || typeof parameter === "function")) {
+          const originalParameter = parameter;
+          // Let the native binding drive coercion, retaining its receiver/error
+          // checks and the original conversion methods' `this`. Record their
+          // result rather than coercing the caller's object a second time.
+          argumentsList[0] = new Proxy({}, {
+            get(_target, key) {
+              const value = Reflect.get(originalParameter, key);
+              return typeof value === "function"
+                ? (...args: unknown[]) => (parameter = Reflect.apply(value, originalParameter, args))
+                : value;
+            }
+          });
+        }
+        // Preserve the native query, receiver checks and null/error results.
+        // Only replace valid unmasked identity strings; all other parameters,
+        // extension availability and pixel output remain native.
+        const nativeValue = Reflect.apply(target, thisArgument, argumentsList);
+        if (state.webglInfoSpoofingEnabled && typeof nativeValue === "string") {
+          parameter = +parameter >>> 0; // GLenum is an unsigned Web IDL long.
           if (parameter === 0x9245) {
             return state.profile.webglVendor;
           }
@@ -1296,39 +1308,10 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
             return state.profile.webglRenderer;
           }
         }
-        return nativeGetParameter.call(this, parameter);
+        return nativeValue;
       }
-    });
-
-    Object.defineProperty(prototype, "getExtension", {
-      configurable: true,
-      value: function getExtension(this: WebGLRenderingContext, name: string) {
-        if (state.webglInfoSpoofingEnabled && name === "WEBGL_debug_renderer_info") {
-          // Hand back the real extension object whenever the browser has one;
-          // its constants are what the patched getParameter answers to.
-          return nativeGetExtension.call(this, name) ?? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
-        }
-        return nativeGetExtension.call(this, name);
-      }
-    });
-    maskAsNative(prototype.getParameter, nativeGetParameter);
-    maskAsNative(prototype.getExtension, nativeGetExtension);
-  }
-
-  Object.defineProperty(prototype, "readPixels", {
-    configurable: true,
-    value: function readPixels(this: WebGLRenderingContext, ...args: unknown[]) {
-      const result = nativeReadPixels.apply(this, args);
-      if (state.enabled) {
-        const pixels = findLastArrayBufferView(args);
-        if (pixels && "length" in pixels) {
-          noiseArrayLike(pixels as NumericArray, "webgl");
-        }
-      }
-      return result;
-    }
+    }), nativeGetParameter)
   });
-  maskAsNative(prototype.readPixels, nativeReadPixels);
 }
 
 // WebGPU reports the GPU family through GPUAdapterInfo (reachable via
@@ -1490,9 +1473,10 @@ function workerIdentityPrelude(profile: Profile): string {
     "function mask(wrapper,native){sources.set(wrapper,native);return wrapper;}",
     "try{Object.defineProperty(Function.prototype,\"toString\",{configurable:true,writable:true,value:mask(function toString(){var native=sources.get(this);return nativeToString.call(native||this);},nativeToString)});}catch(error){}",
     `var vendor=${JSON.stringify(profile.webglVendor)},renderer=${JSON.stringify(profile.webglRenderer)};`,
-    "function patchWebGL(proto){if(!proto)return;var nativeGetParameter=proto.getParameter,nativeGetExtension=proto.getExtension;try{",
-    "Object.defineProperty(proto,\"getParameter\",{configurable:true,writable:true,value:mask(function getParameter(name){if(name===37445)return vendor;if(name===37446)return renderer;return nativeGetParameter.call(this,name);},nativeGetParameter)});",
-    "Object.defineProperty(proto,\"getExtension\",{configurable:true,writable:true,value:mask(function getExtension(name){if(name===\"WEBGL_debug_renderer_info\"){var native=nativeGetExtension.call(this,name);return native||{UNMASKED_VENDOR_WEBGL:37445,UNMASKED_RENDERER_WEBGL:37446};}return nativeGetExtension.call(this,name);},nativeGetExtension)});",
+    "function patchWebGL(proto){if(!proto)return;var nativeGetParameter=proto.getParameter;try{",
+    "Object.defineProperty(proto,\"getParameter\",{configurable:true,writable:true,value:mask(new Proxy(nativeGetParameter,{apply:function(target,receiver,args){",
+    "var parameter=args[0];if(parameter!==null&&(typeof parameter===\"object\"||typeof parameter===\"function\")){var originalParameter=parameter;args[0]=new Proxy({},{get:function(_,key){var method=Reflect.get(originalParameter,key);return typeof method===\"function\"?function(){return parameter=Reflect.apply(method,originalParameter,arguments);}:method;}});}",
+    "var value=Reflect.apply(target,receiver,args);if(typeof value===\"string\"){parameter=+parameter>>>0;if(parameter===37445)return vendor;if(parameter===37446)return renderer;}return value;}}),nativeGetParameter)});",
     "}catch(error){}}",
     "patchWebGL(self.WebGLRenderingContext&&self.WebGLRenderingContext.prototype);",
     "patchWebGL(self.WebGL2RenderingContext&&self.WebGL2RenderingContext.prototype);",
@@ -1501,28 +1485,6 @@ function workerIdentityPrelude(profile: Profile): string {
       : "",
     "})();"
   ].join("");
-}
-
-function findLastArrayBufferView(values: unknown[]): ArrayBufferView | null {
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const value = values[index];
-    if (ArrayBuffer.isView(value)) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function noiseArrayLike(array: NumericArray, purpose: string): void {
-  const random = mulberry32(fnv1a(`${state.seed}:${purpose}:${array.length}`));
-  const stride = Math.max(1, Math.floor(array.length / 256));
-  for (let index = 0; index < array.length; index += stride) {
-    if (array instanceof Float32Array) {
-      array[index] += (random() - 0.5) * 1e-7;
-    } else {
-      array[index] = clampByte(array[index] + randomStep(random));
-    }
-  }
 }
 
 function findDescriptorOwner(prototype: object | null, property: string): object | null {
@@ -1547,15 +1509,6 @@ function defineMethod(target: object, property: string, value: unknown): void {
   } catch {
     // Some browser-owned prototypes reject redefinition; other surfaces remain patched.
   }
-}
-
-function randomStep(random: () => number): number {
-  const value = random();
-  return value < 0.33 ? -1 : value > 0.66 ? 1 : 0;
-}
-
-function clampByte(value: number): number {
-  return Math.max(0, Math.min(255, value));
 }
 
 function pad(value: number): string {

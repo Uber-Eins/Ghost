@@ -7,9 +7,23 @@
   </head>
   <body>
     <p>Open this file in a browser with Ghost installed. Every <code>unmasked*</code> and <code>webgpu</code> value should match the active profile; <code>vendor</code>/<code>renderer</code> must stay <code>WebKit</code>/<code>WebKit WebGL</code>, and every <code>*ToString</code> entry must read as native code. Chromium refuses module workers from <code>blob:null/</code> URLs on <code>file://</code> pages, so <code>moduleBlobWorker</code> only works when this page is served over http(s). Same-origin URL workers are intentionally left native.</p>
+    <p><code>readPixelsUnmodified</code> and every <code>parameterCoercion.*Matches</code> must be true, <code>conversions</code> must be 1, <code>invalidReceiverError</code> must be <code>TypeError</code>, and <code>invalidReceiverConversions</code> must be 0.</p>
     <pre id="output">pending</pre>
     <script>
       (async () => {
+        function probeParameterCoercion(gl, ext) {
+          if (!gl || !ext) return "unavailable";
+          let conversions = 0;
+          const objectRenderer = gl.getParameter({
+            valueOf() { conversions++; return ext.UNMASKED_RENDERER_WEBGL; }
+          });
+          return {
+            stringVendorMatches: gl.getParameter(String(ext.UNMASKED_VENDOR_WEBGL)) === gl.getParameter(ext.UNMASKED_VENDOR_WEBGL),
+            stringRendererMatches: gl.getParameter(String(ext.UNMASKED_RENDERER_WEBGL)) === gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+            objectRendererMatches: objectRenderer === gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+            conversions
+          };
+        }
         const out = {};
         const gl = document.createElement("canvas").getContext("webgl");
         const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
@@ -17,20 +31,42 @@
         out.renderer = gl && gl.getParameter(gl.RENDERER);
         out.unmaskedVendor = ext && gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
         out.unmaskedRenderer = ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+        out.parameterCoercion = probeParameterCoercion(gl, ext);
         out.extensionTag = Object.prototype.toString.call(ext);
         out.getParameterToString = WebGLRenderingContext.prototype.getParameter.toString();
         out.getExtensionToString = WebGLRenderingContext.prototype.getExtension.toString();
         out.workerToString = Worker.toString();
         out.dateToStringToString = Date.prototype.toString.toString();
 
+        if (gl && ext) {
+          gl.canvas.width = gl.canvas.height = 41;
+          gl.clearColor(1, 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          const pixels = new Uint8Array(41 * 41 * 4);
+          gl.readPixels(0, 0, 41, 41, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          out.readPixelsUnmodified = pixels.every((value, index) =>
+            value === (index % 4 === 0 || index % 4 === 3 ? 255 : 0));
+          out.invalidReceiverError = "did not throw";
+          out.invalidReceiverConversions = 0;
+          try {
+            gl.getParameter.call({}, {
+              valueOf() { out.invalidReceiverConversions++; return ext.UNMASKED_RENDERER_WEBGL; }
+            });
+          } catch (error) {
+            out.invalidReceiverError = error.name;
+          }
+        }
+
         const workerCode = `
+          ${probeParameterCoercion.toString()}
           const canvas = new OffscreenCanvas(8, 8);
           const gl = canvas.getContext("webgl");
           const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
           self.postMessage({
             vendor: gl && gl.getParameter(gl.VENDOR),
             unmaskedVendor: ext && gl.getParameter(ext.UNMASKED_VENDOR_WEBGL),
-            unmaskedRenderer: ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+            unmaskedRenderer: ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL),
+            parameterCoercion: probeParameterCoercion(gl, ext)
           });`;
         const runBlobWorker = (type) => new Promise((resolve) => {
           const url = URL.createObjectURL(new Blob([workerCode], { type: "text/javascript" }));
