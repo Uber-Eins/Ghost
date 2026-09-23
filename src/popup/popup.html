@@ -7,53 +7,150 @@
     <link rel="stylesheet" href="popup.css">
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Ghost</h1>
-        <span id="build"></span>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+        <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+        <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.972a4 4 0 0 1 3.6 2.2"/><path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"/></symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="10" x2="10" y1="15" y2="9"/><line x1="14" x2="14" y1="15" y2="9"/></symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+        <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+        <symbol id="i-fingerprint" viewBox="0 0 24 24"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4"/><path d="M14 13.12c0 2.38 0 6.38-1 8.88"/><path d="M17.29 21.02c.12-.6.43-2.3.5-3.02"/><path d="M2 12a10 10 0 0 1 18-6"/><path d="M2 16h.01"/><path d="M21.8 16c.2-2 .131-5.354 0-6"/><path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2"/><path d="M8.65 22c.21-.66.45-1.32.57-2"/><path d="M9 6.8a6 6 0 0 1 9 5.2v2"/></symbol>
+        <symbol id="i-external" viewBox="0 0 24 24"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></symbol>
+        <symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76a6 6 0 1 0-8.01 8.91"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+      </defs>
+    </svg>
+
+    <main class="popup" data-tone="ok">
+      <header class="topbar">
+        <img class="logo" src="icons/enabled-48.png" width="36" height="36" alt="">
+        <div class="brand">
+          <div class="brand-row">
+            <h1>Ghost</h1>
+            <span id="build" class="badge">Lite</span>
+          </div>
+          <div class="status-line">
+            <span id="statusDot" class="dot"></span>
+            <span id="statusText"></span>
+          </div>
+        </div>
+        <button id="options" class="icon-btn" type="button" data-i18n-title="options" data-i18n-aria="options">
+          <svg class="icon"><use href="#i-settings"/></svg>
+        </button>
       </header>
 
-      <section id="protectionWarning" class="warning" role="alert" hidden>
-        <strong data-i18n="unprotected">Unprotected</strong>
-        <p data-i18n="enableUserScriptsRequired">Enable Allow User Scripts, then reopen Ghost.</p>
-        <button id="enableUserScripts" type="button" data-i18n="openExtensionSettings">Open extension settings</button>
+      <section id="protectionWarning" class="banner banner-danger" role="alert" hidden>
+        <svg class="icon"><use href="#i-alert"/></svg>
+        <div class="banner-body">
+          <strong data-i18n="unprotected">Unprotected</strong>
+          <p data-i18n="enableUserScriptsRequired">Enable Allow User Scripts, then reopen Ghost.</p>
+          <button id="enableUserScripts" class="btn btn-sm btn-danger" type="button" data-i18n="openExtensionSettings">Open extension settings</button>
+        </div>
       </section>
 
-      <section class="status">
+      <section id="pausedBanner" class="banner banner-warn" hidden>
+        <svg class="icon"><use href="#i-clock"/></svg>
+        <div class="banner-body">
+          <strong data-i18n="paused">Paused</strong>
+          <p id="pausedText"></p>
+        </div>
+        <button id="resume" class="btn btn-sm btn-warn" type="button">
+          <svg class="icon icon-sm"><use href="#i-play"/></svg>
+          <span data-i18n="resume">Resume now</span>
+        </button>
+      </section>
+
+      <section class="card site-card">
+        <div class="site-head">
+          <div class="site-avatar">
+            <svg class="icon"><use href="#i-globe"/></svg>
+          </div>
+          <div class="site-meta">
+            <div class="eyebrow" data-i18n="thisSite">This site</div>
+            <div id="site" class="site-name">-</div>
+          </div>
+          <label class="switch" data-i18n-title="protectThisSite">
+            <input id="siteEnabled" type="checkbox" data-i18n-aria="protectThisSite">
+            <span class="track"></span>
+          </label>
+        </div>
+        <p id="siteHint" class="hint"></p>
+      </section>
+
+      <section class="card profile-card">
+        <div class="card-head">
+          <div class="eyebrow" data-i18n="profileForSite">Profile for this site</div>
+          <button id="regenerate" class="icon-btn icon-btn-sm" type="button" data-i18n-title="regenerateProfile" data-i18n-aria="regenerateProfile">
+            <svg class="icon"><use href="#i-shuffle"/></svg>
+          </button>
+        </div>
+        <div class="select-wrap">
+          <select id="profile" data-i18n-aria="profile"></select>
+          <svg class="icon select-chevron"><use href="#i-chevron"/></svg>
+        </div>
+        <div id="autoPill" class="auto-pill" hidden>
+          <svg class="icon icon-sm"><use href="#i-radar"/></svg>
+          <span id="autoPillText"></span>
+        </div>
+        <dl class="facts">
+          <div class="fact">
+            <dt data-i18n="locale">Locale</dt>
+            <dd id="factLocale">-</dd>
+          </div>
+          <div class="fact">
+            <dt data-i18n="timezone">Timezone</dt>
+            <dd id="factTimezone">-</dd>
+          </div>
+          <div class="fact">
+            <dt data-i18n="coordinates">Coordinates</dt>
+            <dd id="factCoords">-</dd>
+          </div>
+          <div class="fact">
+            <dt data-i18n="platform">Platform</dt>
+            <dd id="factPlatform">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="card list-card">
         <label class="row">
-          <span data-i18n="globalProtection">Global protection</span>
-          <input id="globalEnabled" type="checkbox">
+          <span class="row-icon">
+            <svg class="icon"><use href="#i-shield"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title" data-i18n="globalProtection">Global protection</span>
+            <span class="row-sub" data-i18n="globalProtectionSubtitle">Enable Ghost protections for supported sites.</span>
+          </span>
+          <span class="switch">
+            <input id="globalEnabled" type="checkbox" data-i18n-aria="globalProtection">
+            <span class="track"></span>
+          </span>
         </label>
-        <label class="row">
-          <span data-i18n="thisSite">This site</span>
-          <input id="siteEnabled" type="checkbox">
-        </label>
+        <button id="disableHour" class="row row-btn" type="button">
+          <span class="row-icon">
+            <svg class="icon"><use href="#i-pause"/></svg>
+          </span>
+          <span class="row-text">
+            <span class="row-title" data-i18n="disableHour">Disable for 1 hour</span>
+          </span>
+          <svg class="icon icon-sm row-chevron"><use href="#i-chevron"/></svg>
+        </button>
       </section>
 
-      <section>
-        <div class="label" data-i18n="site">Site</div>
-        <div id="site" class="mono">-</div>
-      </section>
-
-      <section>
-        <label class="label" for="profile" data-i18n="profile">Profile</label>
-        <select id="profile"></select>
-      </section>
-
-      <section class="profile">
-        <div id="profileLabel"></div>
-        <div id="profileDetails" class="muted"></div>
-      </section>
-
-      <div class="actions">
-        <button id="regenerate" type="button" data-i18n="regenerateProfile">Regenerate site profile</button>
-        <button id="disableHour" type="button" data-i18n="disableHour">Disable for 1 hour</button>
-      </div>
-
-      <footer>
-        <button id="options" type="button" data-i18n="options">Options</button>
-        <button id="test" type="button" data-i18n="fingerprintTestExternal">External fingerprint test</button>
+      <footer class="footer">
+        <button id="test" class="btn btn-ghost" type="button">
+          <svg class="icon icon-sm"><use href="#i-fingerprint"/></svg>
+          <span data-i18n="fingerprintTestExternal">External fingerprint test</span>
+          <svg class="icon icon-sm"><use href="#i-external"/></svg>
+        </button>
+        <span id="version" class="version"></span>
       </footer>
+
+      <p id="error" class="error" role="status" aria-live="polite" hidden></p>
     </main>
     <script src="popup.js"></script>
   </body>

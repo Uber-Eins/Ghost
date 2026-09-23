@@ -136,3 +136,43 @@ export function formatSpoofedTimeString(
     timeZoneName: "long"
   }).format(date);
 }
+
+// IANA fixed-offset zones use the POSIX sign convention: Etc/GMT-8 lies east
+// of Greenwich, i.e. UTC+08:00. Returns the UTC offset in minutes (east
+// positive) for those zones and `null` for every named zone.
+export function fixedOffsetMinutes(timeZone: string): number | null {
+  if (timeZone === "UTC" || timeZone === "Etc/UTC" || timeZone === "Etc/GMT" || timeZone === "GMT") {
+    return 0;
+  }
+  const match = /^Etc\/GMT([+-])(\d{1,2})$/.exec(timeZone);
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[2]);
+  return (match[1] === "-" ? 1 : -1) * hours * 60;
+}
+
+// UTC offset in minutes, east positive, for any zone the runtime accepts.
+export function utcOffsetMinutes(
+  timeZone: string,
+  date = new Date(),
+  DateTimeFormat: DateTimeFormatConstructor = Intl.DateTimeFormat
+): number | null {
+  const fixed = fixedOffsetMinutes(timeZone);
+  if (fixed !== null) {
+    return fixed;
+  }
+  try {
+    return -getTimezoneOffsetMinutes(date, timeZone, DateTimeFormat);
+  } catch {
+    return null;
+  }
+}
+
+export function utcOffsetLabel(offsetMinutes: number): string {
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const minutes = String(absolute % 60).padStart(2, "0");
+  return `UTC${sign}${hours}:${minutes}`;
+}

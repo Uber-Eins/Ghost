@@ -1,3 +1,5 @@
+import type { HeliumFlagDetection } from "./helium-detect";
+
 export type BuildTarget = "lite" | "advanced";
 
 export type UaMode = "desktop-chromium" | "native";
@@ -27,6 +29,8 @@ export interface Profile {
   acceptLanguage: string;
   platform: string;
   architecture: string;
+  /** Sec-CH-UA-Platform-Version / getHighEntropyValues value; empty picks a current default for the platform. */
+  platformVersion: string;
   userAgent: string;
   uaMode: UaMode;
   deviceMemory: number;
@@ -42,6 +46,7 @@ export interface GhostSettings {
   disableUserAgentSpoofing: boolean;
   disableCanvasMeasureTextSpoofing: boolean;
   disableWebglInfoSpoofing: boolean;
+  heliumFlagSync: boolean;
   automaticLocationEnabled: boolean;
   automaticLanguageMode: AutomaticLanguageMode;
   automaticLocation: AutomaticLocation | null;
@@ -95,6 +100,7 @@ export type RuntimeRequest =
   | { type: "setSiteProfile"; siteKey: string; profileId: string }
   | { type: "regenerateSiteProfile"; siteKey: string }
   | { type: "setTemporaryDisable"; durationMs: number }
+  | { type: "syncHeliumFlags"; detection: HeliumFlagDetection }
   | { type: "options.getState" }
   | { type: "options.saveState"; settings: GhostSettings }
   | { type: "options.refreshAutomaticLocation" }

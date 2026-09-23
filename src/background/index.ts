@@ -4,6 +4,8 @@ import { fetchAutomaticLocation } from "./automatic-location";
 import { isSynchronousContentBootstrapAvailable, refreshContentBootstrap } from "./bootstrap";
 import { clearTabHeaderRule, clearTabHeaderRules, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
 import { stableSeed } from "../shared/hash";
+import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetection, sameHeliumSurfaces } from "../shared/helium-detect";
+import type { HeliumFlagDetection } from "../shared/helium-detect";
 import { sameAutomaticLocation } from "../shared/automatic-location";
 import { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl, unsupportedPageLabel } from "../shared/internal";
 import { findProfile } from "../shared/profiles";
@@ -39,11 +41,17 @@ let automaticLocationRefresh: Promise<GhostSettings> | null = null;
 const tabOverrideRevisions = new Map<number, number>();
 
 chrome.runtime.onInstalled.addListener(() => {
-  runBackgroundTask(initialize().then(() => synchronizeAutomaticLocation(true)));
+  runBackgroundTask(initialize().then(() => Promise.all([
+    synchronizeAutomaticLocation(true),
+    synchronizeHeliumFlagsFromRuntime()
+  ])));
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  runBackgroundTask(initialize().then(() => synchronizeAutomaticLocation(true)));
+  runBackgroundTask(initialize().then(() => Promise.all([
+    synchronizeAutomaticLocation(true),
+    synchronizeHeliumFlagsFromRuntime()
+  ])));
 });
 
 chrome.alarms?.onAlarm.addListener((alarm) => {
@@ -150,6 +158,8 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
       return mutateAndRefresh((settings) => {
         settings.temporaryDisabledUntil = message.durationMs > 0 ? Date.now() + message.durationMs : null;
       });
+    case "syncHeliumFlags":
+      return applyDetectedHeliumFlags(normalizeHeliumFlagDetection(message.detection));
     case "options.getState":
       // The options UI only needs the latest atomically stored settings. It
       // must not wait for CDP/header refreshes running for other tabs.
@@ -523,6 +533,32 @@ async function applyAutomaticLocationNow(location: NonNullable<GhostSettings["au
     runBackgroundTask(refreshAfterSettingsChange(settings));
   }
   return settings;
+}
+
+// The service worker can probe WebGL and client hints itself; the measureText
+// probe needs real documents, so that switch is only synced from Ghost's pages.
+async function synchronizeHeliumFlagsFromRuntime(): Promise<void> {
+  const settings = await readSettings();
+  if (!settings.heliumFlagSync) {
+    return;
+  }
+  await applyDetectedHeliumFlags(await detectHeliumFlags());
+}
+
+async function applyDetectedHeliumFlags(detection: HeliumFlagDetection): Promise<GhostSettings> {
+  const current = await readAppliedSettings();
+  if (!current.heliumFlagSync || sameHeliumSurfaces(current, applyHeliumFlagDetection(current, detection))) {
+    return current;
+  }
+  return mutateAndRefresh((draft) => {
+    if (!draft.heliumFlagSync) {
+      return;
+    }
+    const applied = applyHeliumFlagDetection(draft, detection);
+    draft.disableUserAgentSpoofing = applied.disableUserAgentSpoofing;
+    draft.disableCanvasMeasureTextSpoofing = applied.disableCanvasMeasureTextSpoofing;
+    draft.disableWebglInfoSpoofing = applied.disableWebglInfoSpoofing;
+  });
 }
 
 async function refreshKnownTabOverrides(settings: GhostSettings): Promise<void> {

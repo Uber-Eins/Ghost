@@ -2,6 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  applyHeliumFlagDetection,
+  classifyClientHints,
+  isSpoofedWebglInfo,
+  normalizeHeliumFlagDetection,
+  uaReductionFromClientHints,
+  FIXED_OFFSET_TIMEZONES,
+  fixedOffsetMinutes,
+  timezoneLabel,
+  timezoneRegion,
+  timezoneRegions,
+  timezonesForRegion,
+  utcOffsetLabel,
+  utcOffsetMinutes,
   DEFAULT_EXCLUDED_DOMAINS,
   DEFAULT_SETTINGS,
   FILE_SITE_RULE,
@@ -45,6 +58,7 @@ import {
   updateSettings,
   userAgentForProfile,
   userAgentMetadataForProfile,
+  webgpuAdapterInfoForProfile,
   urlMatchesHostPathRule
 } from "../dist/test/test-api.js";
 
@@ -925,16 +939,22 @@ test("settings normalization keeps generated DNR rules below browser quotas", ()
 });
 
 test("settings migration keeps custom timezones IANA-only", () => {
-  const custom = {
+  const invalid = {
     ...PRESET_PROFILES[0],
     id: "custom-invalid-timezone",
-    timezoneId: "UTC"
+    timezoneId: "Not/A_Zone"
+  };
+  const utc = {
+    ...PRESET_PROFILES[0],
+    id: "custom-utc-timezone",
+    timezoneId: "Etc/UTC"
   };
   const settings = normalizeSettings({
     ...DEFAULT_SETTINGS,
-    customProfiles: [custom]
+    customProfiles: [invalid, utc]
   });
   assert.equal(settings.customProfiles[0].timezoneId, "America/Los_Angeles");
+  assert.equal(settings.customProfiles[1].timezoneId, "UTC", "UTC is a valid IANA zone and keeps the runtime's canonical id");
 });
 
 test("timezone aliases normalize to browser-supported IDs", () => {
@@ -1008,4 +1028,134 @@ test("settings writes are serialized", async () => {
   const settings = await loadSettings();
   assert.equal(settings.siteProfiles["a.example"], "los-angeles-en-us");
   assert.equal(settings.siteProfiles["b.example"], "tokyo-ja-jp");
+});
+
+test("helium flag detection maps observed flag effects onto delegation switches", () => {
+  assert.equal(isSpoofedWebglInfo("Intel", "Intel(R) HD Graphics, or similar"), true);
+  assert.equal(isSpoofedWebglInfo(" ", " "), true);
+  assert.equal(
+    isSpoofedWebglInfo("Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)"),
+    false
+  );
+
+  const chromium = [{ brand: "Chromium", version: "152" }, { brand: "Not?A_Brand", version: "24" }];
+  assert.deepEqual(classifyClientHints({ brands: [] }, null), { brands: [], clientHintsRemoved: true, systemInfoReduced: null });
+  assert.equal(classifyClientHints({ brands: chromium }, { architecture: "", bitness: "", platformVersion: "" }).systemInfoReduced, true);
+  assert.equal(classifyClientHints({ brands: chromium }, { architecture: "x86", bitness: "64", platformVersion: "15.0.0" }).systemInfoReduced, false);
+  assert.equal(classifyClientHints({ brands: chromium }, null).systemInfoReduced, null);
+  assert.equal(classifyClientHints(undefined, null).clientHintsRemoved, null);
+  assert.equal(uaReductionFromClientHints(true, null), true);
+  assert.equal(uaReductionFromClientHints(false, true), true);
+  assert.equal(uaReductionFromClientHints(false, false), false);
+  assert.equal(uaReductionFromClientHints(null, null), null);
+
+  const partial = normalizeHeliumFlagDetection({
+    webglSpoofed: true,
+    clientHintsRemoved: false,
+    systemInfoReduced: true,
+    measureTextNoise: null
+  });
+  assert.equal(partial.uaReductionActive, true);
+  const settings = normalizeSettings({ ...DEFAULT_SETTINGS, disableCanvasMeasureTextSpoofing: true, heliumFlagSync: true });
+  const applied = applyHeliumFlagDetection(settings, partial);
+  assert.equal(applied.disableWebglInfoSpoofing, true);
+  assert.equal(applied.disableUserAgentSpoofing, true);
+  assert.equal(applied.disableCanvasMeasureTextSpoofing, true, "an unavailable probe leaves the switch untouched");
+
+  const nothing = normalizeHeliumFlagDetection({
+    webglSpoofed: false,
+    clientHintsRemoved: false,
+    systemInfoReduced: false,
+    measureTextNoise: false
+  });
+  const cleared = applyHeliumFlagDetection(applied, nothing);
+  assert.equal(cleared.disableWebglInfoSpoofing, false);
+  assert.equal(cleared.disableUserAgentSpoofing, false);
+  assert.equal(cleared.disableCanvasMeasureTextSpoofing, false);
+  assert.equal(normalizeHeliumFlagDetection("garbage").webglSpoofed, null);
+});
+
+test("helium flag sync stays manual for installs with hand-picked delegation switches", () => {
+  assert.equal(normalizeSettings({}).heliumFlagSync, true);
+  assert.equal(normalizeSettings({ disableWebglInfoSpoofing: true }).heliumFlagSync, false);
+  assert.equal(normalizeSettings({ disableUserAgentSpoofing: true, heliumFlagSync: true }).heliumFlagSync, true);
+  assert.equal(normalizeSettings({ heliumFlagSync: false }).heliumFlagSync, false);
+});
+
+test("profiles accept UTC and fixed-offset Etc zones and store the runtime's canonical id", () => {
+  assert.equal(normalizeTimezoneId("Etc/GMT-8"), "Etc/GMT-8");
+  assert.equal(normalizeTimezoneId("Etc/GMT+12"), "Etc/GMT+12");
+  assert.equal(normalizeTimezoneId("Etc/UTC"), "UTC");
+  assert.equal(normalizeTimezoneId("GMT"), "UTC");
+  assert.equal(normalizeTimezoneId("Etc/GMT-15"), "America/Los_Angeles", "invalid ids fall back to the default zone");
+  const runtimeKolkata = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata" }).resolvedOptions().timeZone;
+  assert.equal(normalizeTimezoneId("Asia/Kolkata"), runtimeKolkata);
+  assert.equal(normalizeTimezoneId("Asia/Calcutta"), runtimeKolkata);
+  assert.ok(FIXED_OFFSET_TIMEZONES.every((id) => SUPPORTED_TIMEZONES.includes(id)));
+
+  assert.equal(timezoneRegion("UTC"), "Etc");
+  assert.equal(timezoneRegion("Etc/GMT+5"), "Etc");
+  assert.equal(timezoneRegions("UTC").at(-1), "Etc");
+  const fixed = timezonesForRegion("Etc", "UTC");
+  assert.equal(fixed[0], "Etc/GMT+12");
+  assert.equal(fixed.indexOf("UTC"), 12);
+  assert.equal(fixed.at(-1), "Etc/GMT-14");
+  assert.deepEqual(timezonesForRegion("Asia", "Asia/Tokyo").slice(0, 2), ["Asia/Aden", "Asia/Almaty"]);
+
+  assert.equal(fixedOffsetMinutes("Etc/GMT-8"), 480);
+  assert.equal(fixedOffsetMinutes("Etc/GMT+5"), -300);
+  assert.equal(fixedOffsetMinutes("UTC"), 0);
+  assert.equal(fixedOffsetMinutes("Asia/Tokyo"), null);
+  assert.equal(utcOffsetMinutes("Etc/GMT-8"), 480);
+  assert.equal(utcOffsetMinutes("Asia/Tokyo", new Date(Date.UTC(2026, 0, 1))), 540);
+  assert.equal(utcOffsetMinutes("Asia/Calcutta", new Date(Date.UTC(2026, 0, 1))), 330);
+  assert.equal(utcOffsetMinutes("Not/A_Zone"), null);
+  assert.equal(utcOffsetLabel(480), "UTC+08:00");
+  assert.equal(utcOffsetLabel(-330), "UTC-05:30");
+  assert.equal(utcOffsetLabel(0), "UTC+00:00");
+  assert.equal(timezoneLabel("Etc/GMT-8"), "UTC+08:00 (Etc/GMT-8)");
+  assert.equal(timezoneLabel("UTC"), "UTC");
+  assert.equal(timezoneLabel("America/Los_Angeles"), "Los Angeles");
+});
+
+test("webgpu adapter info follows the profile's WebGL renderer", () => {
+  const apple = {
+    ...PRESET_PROFILES[0],
+    webglVendor: "Google Inc. (Apple)",
+    webglRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Max, Unspecified Version)"
+  };
+  assert.deepEqual(webgpuAdapterInfoForProfile(apple), { vendor: "apple", architecture: "metal-3", device: "", description: "" });
+  assert.deepEqual(
+    webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "new-york-en-us")),
+    { vendor: "nvidia", architecture: "turing", device: "", description: "" }
+  );
+  assert.deepEqual(
+    webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "london-en-gb")),
+    { vendor: "amd", architecture: "rdna-2", device: "", description: "" }
+  );
+  assert.equal(webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "tokyo-ja-jp")).architecture, "gen-9");
+  assert.equal(webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "berlin-de-de")).architecture, "gen-12lp");
+  assert.equal(webgpuAdapterInfoForProfile({ ...apple, webglVendor: "", webglRenderer: "" }), null);
+});
+
+test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () => {
+  const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(pageMain, /parameter === (?:0x1f00|0x1f01|7936|7937)/i);
+  assert.match(pageMain, /parameter === (?:0x9245|37445)/i);
+  assert.match(pageMain, /GPUAdapterInfo/);
+  assert.match(pageMain, /importScripts\(/);
+});
+
+test("client hints platform version never describes an impossible OS", () => {
+  const mac = { ...PRESET_PROFILES[0], platform: "MacIntel", architecture: "arm" };
+  const macVersion = userAgentMetadataForProfile(mac)?.platformVersion;
+  assert.match(macVersion, /^\d+\.\d+\.\d+$/);
+  assert.ok(Number(macVersion.split(".")[0]) >= 11, `frozen 10_15_7 UA must not leak into platformVersion (${macVersion})`);
+  assert.equal(userAgentMetadataForProfile({ ...mac, platformVersion: "15.6.1" })?.platformVersion, "15.6.1");
+  assert.equal(userAgentMetadataForProfile({ ...mac, platformVersion: "garbage" })?.platformVersion, macVersion);
+  assert.notEqual(userAgentMetadataForProfile({ ...PRESET_PROFILES[0], platform: "Linux x86_64" })?.platformVersion, "0.0.0");
+  assert.equal(userAgentMetadataForProfile(PRESET_PROFILES[0])?.platformVersion, "10.0.0");
+  const normalized = normalizeSettings({ ...DEFAULT_SETTINGS, customProfiles: [{ ...mac, id: "custom-mac", platformVersion: " 26.6 " }] });
+  assert.equal(normalized.customProfiles[0].platformVersion, "26.6.0");
+  assert.equal(normalizeSettings({ ...DEFAULT_SETTINGS, customProfiles: [{ ...mac, id: "custom-mac", platformVersion: "nope" }] }).customProfiles[0].platformVersion, "");
 });

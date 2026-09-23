@@ -2,7 +2,7 @@ import { fnv1a, mulberry32, stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
 import { constructDateWithNewTarget } from "../shared/date-constructor";
 import { isSupportedPageUrl } from "../shared/internal";
-import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile } from "../shared/profiles";
+import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import {
   dateFromZonedLocalParts,
@@ -122,6 +122,11 @@ const installedSurfaceOwnership = Object.freeze({
 });
 const initialProfileSignature = profileSignature(fallbackProfile);
 const intlInstanceMetadata = new WeakMap<object, IntlInstanceMetadata>();
+// Every replaced built-in is registered against the native it wraps so that
+// Function.prototype.toString keeps printing the original native source. A
+// wrapper whose toString exposes JavaScript is the cheapest tamper signal a
+// page can look for. Declared before the install sequence below runs.
+const nativeFunctionSources = new WeakMap<object, Function>();
 const bridgeNonce = createNonce();
 let bridgePort: MessagePort | null = null;
 let bridgeConnected = false;
@@ -194,6 +199,7 @@ function install(): void {
   }
   (window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled = true;
 
+  patchFunctionToString();
   patchGlobalPrivacyControl();
   if (!installedSurfaceOwnership.profileProtection) {
     // Excluded documents (including Turnstile challenge frames) must keep
@@ -210,6 +216,10 @@ function install(): void {
     patchCanvas();
   }
   patchWebGL();
+  if (installedSurfaceOwnership.webglInfo) {
+    patchWebGPU();
+    patchWorkers();
+  }
 }
 
 function connectBridge(): void {
@@ -341,11 +351,11 @@ function patchHistoryMethod(method: "pushState" | "replaceState"): void {
     Object.defineProperty(history, method, {
       configurable: true,
       writable: true,
-      value: function historyMethod(this: History, ...args: Parameters<History["pushState"]>) {
+      value: maskAsNative(function historyMethod(this: History, ...args: Parameters<History["pushState"]>) {
         const result = native.apply(this, args);
         queueMicrotask(() => requestResolvedProfile(true));
         return result;
-      }
+      }, native)
     });
   } catch {
     // Some pages make history methods non-configurable.
@@ -365,6 +375,7 @@ function profileSignature(profile: Profile): string {
     profile.acceptLanguage,
     profile.platform,
     profile.architecture,
+    profile.platformVersion,
     profile.userAgent,
     profile.uaMode,
     profile.deviceMemory,
@@ -497,6 +508,33 @@ function spoofingBaseUserAgentString(): string {
   return String(nativeNavigator.userAgent ?? "");
 }
 
+function maskAsNative<T>(wrapper: T, native: unknown): T {
+  if (typeof native === "function" && (typeof wrapper === "function" || (typeof wrapper === "object" && wrapper !== null))) {
+    nativeFunctionSources.set(wrapper as object, native);
+  }
+  return wrapper;
+}
+
+function patchFunctionToString(): void {
+  const nativeToString = Function.prototype.toString;
+  const maskedToString = function toString(this: unknown): string {
+    const source = (typeof this === "function" || (typeof this === "object" && this !== null))
+      ? nativeFunctionSources.get(this as object)
+      : undefined;
+    return Reflect.apply(nativeToString, source ?? this, []) as string;
+  };
+  nativeFunctionSources.set(maskedToString, nativeToString);
+  try {
+    Object.defineProperty(Function.prototype, "toString", {
+      configurable: true,
+      writable: true,
+      value: maskedToString
+    });
+  } catch {
+    // Leave toString native if the page froze Function.prototype.
+  }
+}
+
 function patchGlobalPrivacyControl(): void {
   defineNavigatorGetter("globalPrivacyControl", function globalPrivacyControl() {
     if (state.globalPrivacyControlEnabled) {
@@ -528,13 +566,13 @@ function patchIframeNavigatorAccess(): void {
   const contentWindowDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentWindow");
   const nativeGetContentWindow = contentWindowDescriptor?.get;
   if (contentWindowDescriptor && nativeGetContentWindow) {
-    const wrappedGetter = new Proxy(nativeGetContentWindow, {
+    const wrappedGetter = maskAsNative(new Proxy(nativeGetContentWindow, {
       apply(target, thisArgument, argumentsList) {
         const childWindow = Reflect.apply(target, thisArgument, argumentsList) as Window | null;
         synchronizeChildNavigator(childWindow);
         return childWindow;
       }
-    });
+    }), nativeGetContentWindow);
     try {
       Object.defineProperty(prototype, "contentWindow", {
         ...contentWindowDescriptor,
@@ -548,13 +586,13 @@ function patchIframeNavigatorAccess(): void {
   const contentDocumentDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentDocument");
   const nativeGetContentDocument = contentDocumentDescriptor?.get;
   if (contentDocumentDescriptor && nativeGetContentDocument) {
-    const wrappedGetter = new Proxy(nativeGetContentDocument, {
+    const wrappedGetter = maskAsNative(new Proxy(nativeGetContentDocument, {
       apply(target, thisArgument, argumentsList) {
         const childDocument = Reflect.apply(target, thisArgument, argumentsList) as Document | null;
         synchronizeChildNavigator(childDocument?.defaultView ?? null);
         return childDocument;
       }
-    });
+    }), nativeGetContentDocument);
     try {
       Object.defineProperty(prototype, "contentDocument", {
         ...contentDocumentDescriptor,
@@ -688,14 +726,14 @@ function defineNavigatorGetter(property: string, getter: () => unknown): void {
 }
 
 function nativeLookingGetter(nativeGetter: () => unknown, value: () => unknown): () => unknown {
-  return new Proxy(nativeGetter, {
+  return maskAsNative(new Proxy(nativeGetter, {
     apply(target, thisArgument, argumentsList) {
       // Preserve the native getter's receiver validation before substituting
       // the configured value. Proxies stringify with a native-code surface.
       Reflect.apply(target, thisArgument, argumentsList);
       return value();
     }
-  });
+  }), nativeGetter);
 }
 
 function syncUserAgentDataDescriptor(): void {
@@ -744,29 +782,38 @@ function buildUserAgentData(): object | undefined {
   }
   const metadataRecord = metadata as unknown as Record<string, unknown>;
   const brands = Object.freeze(metadata.brands.map((brand) => Object.freeze({ ...brand })));
-  const value = Object.freeze({
-    brands,
-    mobile: metadata.mobile,
-    platform: metadata.platform,
-    getHighEntropyValues: async (hints: string[]) => {
-      const values: Record<string, unknown> = {
-        brands: cloneJson(metadata.brands),
-        mobile: metadata.mobile,
-        platform: metadata.platform
-      };
-      for (const hint of hints) {
-        if (hint in metadataRecord) {
-          values[hint] = cloneJson(metadataRecord[hint]);
+  const nativeUaDataPrototype = (window as unknown as { NavigatorUAData?: { prototype: Record<string, unknown> } }).NavigatorUAData?.prototype;
+  const value = Object.create(nativeUaDataPrototype ?? Object.prototype) as Record<string, unknown>;
+  Object.defineProperties(value, {
+    brands: { value: brands, enumerable: true },
+    mobile: { value: metadata.mobile, enumerable: true },
+    platform: { value: metadata.platform, enumerable: true },
+    getHighEntropyValues: {
+      value: maskAsNative(async function getHighEntropyValues(hints: string[]) {
+        const values: Record<string, unknown> = {
+          brands: cloneJson(metadata.brands),
+          mobile: metadata.mobile,
+          platform: metadata.platform
+        };
+        for (const hint of hints) {
+          if (hint in metadataRecord) {
+            values[hint] = cloneJson(metadataRecord[hint]);
+          }
         }
-      }
-      return values;
+        return values;
+      }, nativeUaDataPrototype?.getHighEntropyValues)
     },
-    toJSON: () => ({
-      brands: cloneJson(metadata.brands),
-      mobile: metadata.mobile,
-      platform: metadata.platform
-    })
+    toJSON: {
+      value: maskAsNative(function toJSON() {
+        return {
+          brands: cloneJson(metadata.brands),
+          mobile: metadata.mobile,
+          platform: metadata.platform
+        };
+      }, nativeUaDataPrototype?.toJSON)
+    }
   });
+  Object.freeze(value);
   cachedUserAgentData = { key: cacheKey, value };
   return value;
 }
@@ -809,12 +856,13 @@ function patchIntlConstructor(name: keyof typeof NativeIntl, timeZoneOption?: "t
 
   Object.setPrototypeOf(Wrapped, NativeConstructor);
   Wrapped.prototype = NativeConstructor.prototype;
+  maskAsNative(Wrapped, NativeConstructor);
 
   const nativeSupportedLocalesOf = (NativeConstructor as unknown as { supportedLocalesOf?: (...args: unknown[]) => unknown }).supportedLocalesOf;
   if (nativeSupportedLocalesOf) {
     Object.defineProperty(Wrapped, "supportedLocalesOf", {
       configurable: true,
-      value: (...args: unknown[]) => nativeSupportedLocalesOf.apply(NativeConstructor, args)
+      value: maskAsNative((...args: unknown[]) => nativeSupportedLocalesOf.apply(NativeConstructor, args), nativeSupportedLocalesOf)
     });
   }
 
@@ -822,7 +870,7 @@ function patchIntlConstructor(name: keyof typeof NativeIntl, timeZoneOption?: "t
   if (nativeResolvedOptions) {
     Object.defineProperty(NativeConstructor.prototype, "resolvedOptions", {
       configurable: true,
-      value: function resolvedOptions(this: object) {
+      value: maskAsNative(function resolvedOptions(this: object) {
         const result = nativeResolvedOptions.call(this);
         const metadata = intlInstanceMetadata.get(this);
         if (state.enabled && metadata?.locale) {
@@ -832,7 +880,7 @@ function patchIntlConstructor(name: keyof typeof NativeIntl, timeZoneOption?: "t
           result.timeZone = metadata.timeZone;
         }
         return result;
-      }
+      }, nativeResolvedOptions)
     });
   }
 
@@ -958,6 +1006,21 @@ function patchDate(): void {
     }
   });
 
+  const nativeDateMethods: Record<string, unknown> = {
+    ...nativeGetters,
+    getTimezoneOffset: nativeGetTimezoneOffset,
+    getYear: nativeGetYear,
+    toString: nativeToString,
+    toDateString: nativeToDateString,
+    toTimeString: nativeToTimeString,
+    toLocaleString: nativeToLocaleString,
+    toLocaleDateString: nativeToLocaleDateString,
+    toLocaleTimeString: nativeToLocaleTimeString
+  };
+  for (const [name, native] of Object.entries(nativeDateMethods)) {
+    maskAsNative((NativeDate.prototype as unknown as Record<string, unknown>)[name], native);
+  }
+
   function GhostDate(this: Date, ...args: unknown[]): string | Date {
     if (!new.target) {
       return new NativeDate().toString();
@@ -966,10 +1029,11 @@ function patchDate(): void {
   }
   Object.setPrototypeOf(GhostDate, NativeDate);
   GhostDate.prototype = NativeDate.prototype;
+  maskAsNative(GhostDate, NativeDate);
   Object.defineProperties(GhostDate, {
-    now: { value: NativeDate.now.bind(NativeDate) },
-    parse: { value: NativeDate.parse.bind(NativeDate) },
-    UTC: { value: NativeDate.UTC.bind(NativeDate) }
+    now: { value: maskAsNative(NativeDate.now.bind(NativeDate), NativeDate.now) },
+    parse: { value: maskAsNative(NativeDate.parse.bind(NativeDate), NativeDate.parse) },
+    UTC: { value: maskAsNative(NativeDate.UTC.bind(NativeDate), NativeDate.UTC) }
   });
   Object.defineProperty(window, "Date", {
     configurable: true,
@@ -1044,7 +1108,8 @@ function timeZoneName(date: Date): string {
 function patchGeolocation(): void {
   const watches = new Map<number, { nativeId?: number; timer?: number }>();
   let watchId = 1;
-  const geolocation = {
+  const nativeGeolocationPrototype = window.Geolocation?.prototype;
+  const geolocationMethods = {
     getCurrentPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
       if (!state.enabled && nativeGeolocation) {
         return nativeGeolocation.getCurrentPosition.call(nativeGeolocation, success, error, options);
@@ -1079,6 +1144,16 @@ function patchGeolocation(): void {
       watches.delete(id);
     }
   };
+  // Present a real Geolocation-shaped object: native prototype for the
+  // toString tag, own methods that print as native code.
+  const geolocation = Object.create(nativeGeolocationPrototype ?? Object.prototype) as Geolocation;
+  for (const name of ["getCurrentPosition", "watchPosition", "clearWatch"] as const) {
+    Object.defineProperty(geolocation, name, {
+      configurable: true,
+      writable: true,
+      value: maskAsNative(geolocationMethods[name], nativeGeolocationPrototype?.[name])
+    });
+  }
 
   defineNavigatorGetter("geolocation", () => geolocation);
 }
@@ -1104,6 +1179,8 @@ function patchFontFaceSet(): void {
     return nativeLoad.call(this, font, text);
   };
 
+  maskAsNative(patchedCheck, nativeCheck);
+  maskAsNative(patchedLoad, nativeLoad);
   defineMethod(prototype, "check", patchedCheck);
   defineMethod(prototype, "load", patchedLoad);
   if (fontSet) {
@@ -1163,6 +1240,7 @@ function patchCanvas(): void {
         });
       }
     });
+    maskAsNative(contextPrototype.measureText, nativeMeasureText);
   }
 }
 
@@ -1206,11 +1284,15 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
     Object.defineProperty(prototype, "getParameter", {
       configurable: true,
       value: function getParameter(this: WebGLRenderingContext, parameter: number) {
+        // Only the WEBGL_debug_renderer_info pair carries hardware identity.
+        // Chromium answers the plain VENDOR/RENDERER enums (0x1F00/0x1F01)
+        // with the fixed "WebKit" / "WebKit WebGL" strings on every platform,
+        // so those must stay native or the page sees an impossible browser.
         if (state.webglInfoSpoofingEnabled) {
-          if (parameter === 0x9245 || parameter === 0x1f00) {
+          if (parameter === 0x9245) {
             return state.profile.webglVendor;
           }
-          if (parameter === 0x9246 || parameter === 0x1f01) {
+          if (parameter === 0x9246) {
             return state.profile.webglRenderer;
           }
         }
@@ -1222,11 +1304,15 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
       configurable: true,
       value: function getExtension(this: WebGLRenderingContext, name: string) {
         if (state.webglInfoSpoofingEnabled && name === "WEBGL_debug_renderer_info") {
-          return { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+          // Hand back the real extension object whenever the browser has one;
+          // its constants are what the patched getParameter answers to.
+          return nativeGetExtension.call(this, name) ?? { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
         }
         return nativeGetExtension.call(this, name);
       }
     });
+    maskAsNative(prototype.getParameter, nativeGetParameter);
+    maskAsNative(prototype.getExtension, nativeGetExtension);
   }
 
   Object.defineProperty(prototype, "readPixels", {
@@ -1242,6 +1328,179 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
       return result;
     }
   });
+  maskAsNative(prototype.readPixels, nativeReadPixels);
+}
+
+// WebGPU reports the GPU family through GPUAdapterInfo (reachable via
+// adapter.info, device.adapterInfo and the legacy requestAdapterInfo()). Keep
+// it in agreement with the profile's WebGL renderer; limits and features stay
+// native because they cannot be faked consistently.
+function patchWebGPU(): void {
+  const adapterInfoPrototype = (window as unknown as { GPUAdapterInfo?: { prototype: object } }).GPUAdapterInfo?.prototype;
+  if (!adapterInfoPrototype) {
+    return;
+  }
+  for (const property of ["vendor", "architecture", "device", "description"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(adapterInfoPrototype, property);
+    const nativeGetter = descriptor?.get;
+    if (!nativeGetter) {
+      continue;
+    }
+    try {
+      Object.defineProperty(adapterInfoPrototype, property, {
+        configurable: true,
+        enumerable: descriptor.enumerable ?? true,
+        get: nativeMappingGetter(nativeGetter, (nativeValue) => {
+          const spoofed = state.webglInfoSpoofingEnabled ? webgpuAdapterInfoForProfile(state.profile) : null;
+          return spoofed ? spoofed[property] : nativeValue;
+        })
+      });
+    } catch {
+      // Some builds freeze WebGPU prototypes; the WebGL surface is still covered.
+    }
+  }
+}
+
+function nativeMappingGetter(nativeGetter: () => unknown, map: (nativeValue: unknown) => unknown): () => unknown {
+  return maskAsNative(new Proxy(nativeGetter, {
+    apply(target, thisArgument, argumentsList) {
+      return map(Reflect.apply(target, thisArgument, argumentsList));
+    }
+  }), nativeGetter);
+}
+
+// Dedicated workers get their own WebGL and WebGPU globals that the page
+// patches cannot reach. Blob workers (the shape fingerprinting libraries use
+// for inline probes) are re-created from a wrapper blob that installs the same
+// identity before loading the original script. Same-origin URL workers are
+// left alone: rewriting them to blob: would break relative importScripts,
+// self.location, and any CSP that forbids blob workers.
+function patchWorkers(): void {
+  const NativeWorker = window.Worker;
+  const NativeBlob = window.Blob;
+  const nativeCreateObjectURL = URL.createObjectURL;
+  const nativeRevokeObjectURL = URL.revokeObjectURL;
+  if (typeof NativeWorker !== "function" || typeof NativeBlob !== "function"
+    || typeof nativeCreateObjectURL !== "function" || typeof nativeRevokeObjectURL !== "function") {
+    return;
+  }
+  const createObjectURL = (blob: Blob): string => Reflect.apply(nativeCreateObjectURL, URL, [blob]) as string;
+  const revokeObjectURL = (url: string): void => {
+    Reflect.apply(nativeRevokeObjectURL, URL, [url]);
+  };
+
+  // Remember which Blob backs each object URL the page creates. Opaque
+  // origins (file://, sandboxed frames) cannot re-fetch their own blob: URLs
+  // from inside another worker, so those workers are rebuilt from the Blob
+  // itself instead of being loaded through importScripts.
+  const blobRegistry = new Map<string, Blob>();
+  try {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      writable: true,
+      value: maskAsNative(new Proxy(nativeCreateObjectURL, {
+        apply(target, thisArgument, argumentsList) {
+          const url = Reflect.apply(target, thisArgument, argumentsList) as string;
+          const source = argumentsList[0];
+          if (source instanceof NativeBlob && blobRegistry.size < 512) {
+            blobRegistry.set(url, source);
+          }
+          return url;
+        }
+      }), nativeCreateObjectURL)
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      writable: true,
+      value: maskAsNative(new Proxy(nativeRevokeObjectURL, {
+        apply(target, thisArgument, argumentsList) {
+          blobRegistry.delete(String(argumentsList[0]));
+          return Reflect.apply(target, thisArgument, argumentsList);
+        }
+      }), nativeRevokeObjectURL)
+    });
+  } catch {
+    // Without the registry, opaque-origin blob workers simply stay native.
+  }
+
+  const wrapBlobWorker = (scriptURL: string, options?: WorkerOptions): string | null => {
+    if (!state.enabled || !state.webglInfoSpoofingEnabled || !/^blob:/i.test(scriptURL)) {
+      return null;
+    }
+    try {
+      const prelude = workerIdentityPrelude(state.profile);
+      const original = blobRegistry.get(scriptURL);
+      // file:// documents still report location.origin as "file://", but the
+      // blob URLs they mint are "blob:null/…" and cannot be re-fetched from a
+      // worker, so the URL itself is the reliable opaque-origin signal.
+      if (/^blob:null\//i.test(scriptURL)) {
+        if (!original) {
+          return null;
+        }
+        return createObjectURL(new NativeBlob([`${prelude}\n`, original], { type: original.type || "text/javascript" }));
+      }
+      // Load the original as its own script so its directive prologue and
+      // error reporting stay intact. A static import would evaluate a module
+      // before this prelude, so module workers import dynamically and
+      // re-throw failures asynchronously to keep the worker's error event.
+      const loader = options?.type === "module"
+        ? `import(${JSON.stringify(scriptURL)}).catch(function(error){setTimeout(function(){throw error;});});`
+        : `importScripts(${JSON.stringify(scriptURL)});`;
+      return createObjectURL(new NativeBlob([`${prelude}\n${loader}`], { type: "text/javascript" }));
+    } catch {
+      return null;
+    }
+  };
+
+  const WrappedWorker = maskAsNative(new Proxy(NativeWorker, {
+    construct(target, argumentsList, newTarget) {
+      const [scriptURL, options] = argumentsList as [string | URL, WorkerOptions | undefined];
+      const wrappedURL = wrapBlobWorker(String(scriptURL), options);
+      if (wrappedURL) {
+        try {
+          return Reflect.construct(target, [wrappedURL, options], newTarget);
+        } catch {
+          // Fall back to the untouched script below.
+        } finally {
+          // The worker fetches its script at construction; keep the wrapper
+          // reachable briefly for slow starts, then release it.
+          setTimeout(() => revokeObjectURL(wrappedURL), 60_000);
+        }
+      }
+      return Reflect.construct(target, argumentsList, newTarget);
+    }
+  }), NativeWorker);
+
+  try {
+    Object.defineProperty(window, "Worker", {
+      configurable: true,
+      writable: true,
+      value: WrappedWorker
+    });
+  } catch {
+    // Leave the native constructor in place when the property is locked.
+  }
+}
+
+function workerIdentityPrelude(profile: Profile): string {
+  const webgpu = webgpuAdapterInfoForProfile(profile);
+  return [
+    "(function(){",
+    "var sources=new WeakMap(),nativeToString=Function.prototype.toString;",
+    "function mask(wrapper,native){sources.set(wrapper,native);return wrapper;}",
+    "try{Object.defineProperty(Function.prototype,\"toString\",{configurable:true,writable:true,value:mask(function toString(){var native=sources.get(this);return nativeToString.call(native||this);},nativeToString)});}catch(error){}",
+    `var vendor=${JSON.stringify(profile.webglVendor)},renderer=${JSON.stringify(profile.webglRenderer)};`,
+    "function patchWebGL(proto){if(!proto)return;var nativeGetParameter=proto.getParameter,nativeGetExtension=proto.getExtension;try{",
+    "Object.defineProperty(proto,\"getParameter\",{configurable:true,writable:true,value:mask(function getParameter(name){if(name===37445)return vendor;if(name===37446)return renderer;return nativeGetParameter.call(this,name);},nativeGetParameter)});",
+    "Object.defineProperty(proto,\"getExtension\",{configurable:true,writable:true,value:mask(function getExtension(name){if(name===\"WEBGL_debug_renderer_info\"){var native=nativeGetExtension.call(this,name);return native||{UNMASKED_VENDOR_WEBGL:37445,UNMASKED_RENDERER_WEBGL:37446};}return nativeGetExtension.call(this,name);},nativeGetExtension)});",
+    "}catch(error){}}",
+    "patchWebGL(self.WebGLRenderingContext&&self.WebGLRenderingContext.prototype);",
+    "patchWebGL(self.WebGL2RenderingContext&&self.WebGL2RenderingContext.prototype);",
+    webgpu
+      ? `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(function(){nativeGetter.call(this);return info[key];},nativeGetter)});}catch(error){}});}`
+      : "",
+    "})();"
+  ].join("");
 }
 
 function findLastArrayBufferView(values: unknown[]): ArrayBufferView | null {

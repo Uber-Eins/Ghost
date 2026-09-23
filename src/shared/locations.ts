@@ -1,3 +1,4 @@
+import { fixedOffsetMinutes } from "./timezone";
 import type { Profile } from "./types";
 
 export interface LocalePreset {
@@ -60,9 +61,19 @@ export const FALLBACK_TIMEZONES = [
   "Asia/Riyadh",
   "Australia/Sydney"
 ];
+// IANA fixed-offset zones. `Intl.supportedValuesOf("timeZone")` omits the
+// whole Etc area and UTC, yet Chromium accepts them and reports them verbatim
+// (a machine on TZ=Etc/GMT-8 resolves to "Etc/GMT-8"). POSIX sign convention
+// applies: Etc/GMT-8 is UTC+08:00.
+export const FIXED_OFFSET_TIMEZONES = [
+  "UTC",
+  ...Array.from({ length: 12 }, (_, index) => `Etc/GMT+${index + 1}`),
+  ...Array.from({ length: 14 }, (_, index) => `Etc/GMT-${index + 1}`)
+];
+export const FIXED_OFFSET_REGION = "Etc";
 export const DEFAULT_TIMEZONE = FALLBACK_TIMEZONES[0];
 export const SUPPORTED_TIMEZONES = supportedTimezones();
-export const TIMEZONE_REGIONS = [...new Set(SUPPORTED_TIMEZONES.map(timezoneRegion))].sort();
+export const TIMEZONE_REGIONS = [...new Set(SUPPORTED_TIMEZONES.map(timezoneRegion))].sort(compareTimezoneRegions);
 
 const SUPPORTED_TIMEZONE_SET = new Set(SUPPORTED_TIMEZONES);
 const TIMEZONE_ALIASES: Record<string, string[]> = {
@@ -616,7 +627,7 @@ export function locationPresetForTimezone(timezoneId: string): LocationPreset | 
 
 export function supportedTimezones(): string[] {
   const values = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
-  return [...new Set([...values, ...FALLBACK_TIMEZONES])].sort((left, right) => left.localeCompare(right));
+  return [...new Set([...values, ...FALLBACK_TIMEZONES, ...FIXED_OFFSET_TIMEZONES])].sort(compareTimezoneIds);
 }
 
 export function normalizeTimezoneId(timezoneId: string): string {
@@ -624,10 +635,17 @@ export function normalizeTimezoneId(timezoneId: string): string {
 }
 
 export function supportedTimezoneIdOrNull(timezoneId: string): string | null {
+  const requested = timezoneId.trim();
+  if (!requested) {
+    return null;
+  }
+  // Prefer the identifier the runtime itself reports (for example
+  // "Asia/Calcutta" for "Asia/Kolkata", "UTC" for "Etc/UTC") so that spoofed
+  // pages resolve to exactly what a real browser in that zone would return.
   const candidates = [
-    timezoneId,
-    canonicalTimezoneId(timezoneId),
-    ...(TIMEZONE_ALIASES[timezoneId] ?? [])
+    canonicalTimezoneId(requested),
+    requested,
+    ...(TIMEZONE_ALIASES[requested] ?? [])
   ].filter((entry): entry is string => Boolean(entry));
   return candidates.find((entry) => SUPPORTED_TIMEZONE_SET.has(entry)) ?? null;
 }
@@ -642,11 +660,11 @@ function canonicalTimezoneId(timezoneId: string): string | undefined {
 
 export function timezoneRegion(timezoneId: string): string {
   const separator = timezoneId.indexOf("/");
-  return separator > 0 ? timezoneId.slice(0, separator) : "Other";
+  return separator > 0 ? timezoneId.slice(0, separator) : FIXED_OFFSET_REGION;
 }
 
 export function timezoneRegions(currentTimezoneId: string): string[] {
-  return [...new Set([...TIMEZONE_REGIONS, timezoneRegion(currentTimezoneId)])].sort((left, right) => left.localeCompare(right));
+  return [...new Set([...TIMEZONE_REGIONS, timezoneRegion(currentTimezoneId)])].sort(compareTimezoneRegions);
 }
 
 export function timezonesForRegion(region: string, currentTimezoneId: string): string[] {
@@ -654,12 +672,43 @@ export function timezonesForRegion(region: string, currentTimezoneId: string): s
   if (timezoneRegion(currentTimezoneId) === region && !timezones.includes(currentTimezoneId)) {
     timezones.push(currentTimezoneId);
   }
-  return timezones.sort((left, right) => left.localeCompare(right));
+  return timezones.sort(compareTimezoneIds);
 }
 
 export function timezoneLabel(timezoneId: string): string {
+  const fixed = fixedOffsetMinutes(timezoneId);
+  if (fixed !== null) {
+    return timezoneId === "UTC" ? "UTC" : `${utcOffsetLabelFromMinutes(fixed)} (${timezoneId})`;
+  }
   const separator = timezoneId.indexOf("/");
   return separator > 0 ? timezoneId.slice(separator + 1).replaceAll("_", " ") : timezoneId;
+}
+
+// Named zones sort alphabetically; fixed-offset zones follow them, ordered
+// west to east (Etc/GMT+12 … UTC … Etc/GMT-14) instead of by string.
+function compareTimezoneIds(left: string, right: string): number {
+  const leftFixed = fixedOffsetMinutes(left);
+  const rightFixed = fixedOffsetMinutes(right);
+  if (leftFixed !== null && rightFixed !== null) {
+    return leftFixed - rightFixed || left.localeCompare(right);
+  }
+  if (leftFixed !== null || rightFixed !== null) {
+    return leftFixed !== null ? 1 : -1;
+  }
+  return left.localeCompare(right);
+}
+
+function compareTimezoneRegions(left: string, right: string): number {
+  if (left === FIXED_OFFSET_REGION || right === FIXED_OFFSET_REGION) {
+    return left === right ? 0 : left === FIXED_OFFSET_REGION ? 1 : -1;
+  }
+  return left.localeCompare(right);
+}
+
+function utcOffsetLabelFromMinutes(offsetMinutes: number): string {
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  return `UTC${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
 }
 
 export function applyLocalePreset(profile: Profile, locale: string): Profile {

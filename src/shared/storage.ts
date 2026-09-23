@@ -1,4 +1,4 @@
-import { allProfiles, findProfile, PRESET_PROFILE_IDS, stableProfileIdForSite } from "./profiles";
+import { allProfiles, findProfile, normalizedPlatformVersionOverride, PRESET_PROFILE_IDS, stableProfileIdForSite } from "./profiles";
 import {
   bestMatchingSiteRule,
   DEFAULT_EXCLUDED_DOMAINS,
@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS: GhostSettings = {
   disableUserAgentSpoofing: false,
   disableCanvasMeasureTextSpoofing: false,
   disableWebglInfoSpoofing: false,
+  heliumFlagSync: true,
   automaticLocationEnabled: false,
   automaticLanguageMode: "profile",
   automaticLocation: null,
@@ -72,6 +73,7 @@ export function normalizeSettings(input: unknown): GhostSettings {
       candidate.disableWebglInfoSpoofing,
       DEFAULT_SETTINGS.disableWebglInfoSpoofing
     ),
+    heliumFlagSync: booleanValue(candidate.heliumFlagSync, defaultHeliumFlagSync(candidate)),
     automaticLocationEnabled: booleanValue(
       candidate.automaticLocationEnabled,
       DEFAULT_SETTINGS.automaticLocationEnabled
@@ -309,6 +311,7 @@ function normalizeProfile(profile: Profile): Profile {
     acceptLanguage: sanitizeHeaderValue(profile.acceptLanguage) || fallback.acceptLanguage,
     platform: normalizePlatform(profile.platform, fallback.platform),
     architecture: normalizeArchitecture(profile.architecture),
+    platformVersion: normalizedPlatformVersionOverride(profile.platformVersion) ?? "",
     userAgent: sanitizeUserAgent(profile.userAgent),
     uaMode: profile.uaMode === "native" ? "native" : "desktop-chromium",
     deviceMemory: normalizeDeviceMemory(profile.deviceMemory, fallback.deviceMemory),
@@ -424,6 +427,16 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function finiteNumberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+// Installs that predate flag detection may have hand-picked delegation
+// switches. Keep those manual unless every switch is still at its default.
+function defaultHeliumFlagSync(candidate: Partial<GhostSettings>): boolean {
+  return !(
+    candidate.disableUserAgentSpoofing === true
+    || candidate.disableCanvasMeasureTextSpoofing === true
+    || candidate.disableWebglInfoSpoofing === true
+  );
 }
 
 function booleanValue(value: unknown, fallback: boolean): boolean {

@@ -32,6 +32,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "en-US,en;q=0.9",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -52,6 +53,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "en-US,en;q=0.9",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -72,6 +74,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "en-GB,en;q=0.9",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -92,6 +95,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "de-DE,de;q=0.9,en-US;q=0.7,en;q=0.6",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -112,6 +116,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "ja-JP,ja;q=0.9,en-US;q=0.7,en;q=0.6",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -132,6 +137,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "zh-CN,zh;q=0.9,en-US;q=0.7,en;q=0.6",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -152,6 +158,7 @@ export const PRESET_PROFILES: Profile[] = [
     acceptLanguage: "en-SG,en-US;q=0.9,en;q=0.8",
     platform: "Win32",
     architecture: "x86",
+    platformVersion: "",
     userAgent: "",
     uaMode: "desktop-chromium",
     deviceMemory: 8,
@@ -285,7 +292,7 @@ export function userAgentMetadataForProfile(profile: Profile, nativeUserAgent = 
     brands: brandsForChromiumBrowser(browser.name, browser.major),
     fullVersionList: fullVersionListForChromiumBrowser(browser.name, browser.version),
     platform,
-    platformVersion: platformVersionFromUserAgent(userAgent, platform),
+    platformVersion: normalizedPlatformVersionOverride(profile.platformVersion) ?? platformVersionFromUserAgent(userAgent, platform),
     architecture: typeof profile.architecture === "string" && profile.architecture ? profile.architecture : "x86",
     model: "",
     mobile: isMobileUserAgent(userAgent),
@@ -386,12 +393,21 @@ function platformFromUserAgent(userAgent: string): string | null {
   return null;
 }
 
-function platformVersionFromUserAgent(userAgent: string, platform: string): string {
+// Client hints report the real OS version even though the User-Agent string
+// is frozen. macOS Chromium always says "10_15_7" in the UA, so a version
+// parsed from it would describe a system no current Chromium can run on;
+// Linux reports its kernel release. These defaults stay plausible for the
+// browser versions Ghost impersonates and can be overridden per profile.
+const DEFAULT_MACOS_PLATFORM_VERSION = "26.6.0";
+const DEFAULT_LINUX_PLATFORM_VERSION = "6.12.0";
+
+export function platformVersionFromUserAgent(userAgent: string, platform: string): string {
   if (platform === "Windows") {
     return normalizePlatformVersion(userAgent.match(/\bWindows NT ([0-9._]+)/)?.[1] ?? "10.0.0");
   }
   if (platform === "macOS") {
-    return normalizePlatformVersion(userAgent.match(/\bMac OS X ([0-9._]+)/)?.[1] ?? "10.15.7");
+    const declared = normalizePlatformVersion(userAgent.match(/\bMac OS X ([0-9._]+)/)?.[1] ?? "10.15.7");
+    return declared.startsWith("10.") ? DEFAULT_MACOS_PLATFORM_VERSION : declared;
   }
   if (platform === "Android") {
     return normalizePlatformVersion(userAgent.match(/\bAndroid ([0-9._]+)/)?.[1] ?? "10.0.0");
@@ -399,7 +415,18 @@ function platformVersionFromUserAgent(userAgent: string, platform: string): stri
   if (platform === "iOS") {
     return normalizePlatformVersion(userAgent.match(/\b(?:CPU(?: iPhone)? OS|iPhone OS) ([0-9._]+)/)?.[1] ?? "16.0.0");
   }
+  if (platform === "Linux") {
+    return DEFAULT_LINUX_PLATFORM_VERSION;
+  }
   return "0.0.0";
+}
+
+export function normalizedPlatformVersionOverride(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return /^\d{1,4}(?:\.\d{1,5}){0,3}$/.test(trimmed) ? normalizePlatformVersion(trimmed) : null;
 }
 
 function normalizePlatformVersion(version: string): string {
@@ -424,4 +451,96 @@ export function fallbackProfileForSite(siteKey: string): Profile {
   }
   const profileId = stableProfileIdForSite(siteKey, PRESET_PROFILES);
   return findProfile(profileId, []);
+}
+
+export interface WebgpuAdapterInfo {
+  vendor: string;
+  architecture: string;
+  device: string;
+  description: string;
+}
+
+// Chromium exposes only `vendor` and `architecture` through GPUAdapterInfo by
+// default (`device` and `description` stay empty without developer flags), and
+// the values are coarse family labels. Derive a pair that agrees with the
+// profile's WebGL renderer so the two GPU surfaces never contradict each other.
+export function webgpuAdapterInfoForProfile(profile: Profile): WebgpuAdapterInfo | null {
+  const text = `${profile.webglVendor} ${profile.webglRenderer}`.toLowerCase();
+  const vendor = webgpuVendorFromText(text);
+  if (!vendor) {
+    return null;
+  }
+  return {
+    vendor,
+    architecture: webgpuArchitectureForVendor(vendor, text),
+    device: "",
+    description: ""
+  };
+}
+
+function webgpuVendorFromText(text: string): string {
+  if (/\bapple\b/.test(text)) {
+    return "apple";
+  }
+  if (/\bnvidia\b|geforce|quadro|\brtx\b|\bgtx\b/.test(text)) {
+    return "nvidia";
+  }
+  if (/\bamd\b|radeon|\bati\b/.test(text)) {
+    return "amd";
+  }
+  if (/\bintel\b|\biris\b|uhd graphics|hd graphics/.test(text)) {
+    return "intel";
+  }
+  if (/qualcomm|adreno/.test(text)) {
+    return "qualcomm";
+  }
+  if (/\bmali\b|\barm\b/.test(text)) {
+    return "arm";
+  }
+  return "";
+}
+
+function webgpuArchitectureForVendor(vendor: string, text: string): string {
+  switch (vendor) {
+    case "apple":
+      return "metal-3";
+    case "nvidia":
+      if (/rtx\s*[34]0\d{2}/.test(text)) {
+        return "ampere";
+      }
+      if (/rtx\s*20\d{2}|gtx\s*16\d{2}/.test(text)) {
+        return "turing";
+      }
+      if (/gtx\s*10\d{2}/.test(text)) {
+        return "pascal";
+      }
+      if (/gtx\s*9\d{2}/.test(text)) {
+        return "maxwell";
+      }
+      return "ampere";
+    case "intel":
+      if (/\barc\b|\ba\d{3}\b/.test(text)) {
+        return "xe-hpg";
+      }
+      if (/iris(?:\(r\))?\s*plus|ice lake/.test(text)) {
+        return "gen-11";
+      }
+      if (/uhd graphics 6\d{2}|hd graphics [5-6]\d{2}/.test(text)) {
+        return "gen-9";
+      }
+      return "gen-12lp";
+    case "amd":
+      if (/rx\s*7\d{3}|7[68]0m/.test(text)) {
+        return "rdna-3";
+      }
+      if (/rx\s*5\d{3}/.test(text)) {
+        return "rdna-1";
+      }
+      if (/vega/.test(text)) {
+        return "gcn-5";
+      }
+      return "rdna-2";
+    default:
+      return "";
+  }
 }

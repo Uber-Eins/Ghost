@@ -1,40 +1,62 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Edit3, Fingerprint, Plus, RefreshCw, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
-import { Button } from "./components/ui/button";
+import {
+  Asterisk,
+  AudioLines,
+  Ban,
+  Blocks,
+  CircleAlert,
+  CircleCheck,
+  Cpu,
+  Fingerprint,
+  Globe,
+  Hand,
+  Info,
+  Languages,
+  Layers,
+  LoaderCircle,
+  LocateFixed,
+  MapPin,
+  Monitor,
+  Plus,
+  Radar,
+  RefreshCw,
+  RotateCcw,
+  Route,
+  Save,
+  ScanSearch,
+  ShieldAlert,
+  ShieldCheck,
+  SlidersHorizontal,
+  Terminal,
+  Trash2,
+  Type,
+  Wand2,
+  X
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Badge } from "./components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from "./components/ui/dialog";
+import { Button } from "./components/ui/button";
+import { Dialog } from "./components/ui/dialog";
 import { Input } from "./components/ui/input";
-import { Label } from "./components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from "./components/ui/select";
+import { Section } from "./components/ui/section";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./components/ui/select";
+import { SettingRow } from "./components/ui/setting-row";
 import { Switch } from "./components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
-import { Textarea } from "./components/ui/textarea";
-import {
-  ARCHITECTURE_OPTIONS,
-  applyLocalePreset,
-  LOCALE_PRESETS,
-  normalizeTimezoneId,
-  PLATFORM_OPTIONS,
-  timezoneLabel,
-  timezoneRegion,
-  timezoneRegions,
-  timezonesForRegion
-} from "../shared/locations";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
+import { ConfirmDialog } from "./components/confirm-dialog";
+import { AddProfileCard, ProfileCard } from "./components/profile-card";
+import { normalizeProfileDraft, ProfileEditorDialog, type ProfileDialogState } from "./components/profile-editor";
+import { Sidebar, type NavItem } from "./components/sidebar";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
+import {
+  applyHeliumFlagDetection,
+  detectHeliumFlags,
+  detectedHeliumFlagNames,
+  HELIUM_SURFACE_KEYS,
+  sameHeliumSurfaces,
+  type HeliumFlagDetection
+} from "../shared/helium-detect";
 import { openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
@@ -42,49 +64,61 @@ import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from 
 import { normalizeSettings, profileIdForSiteKey, SETTINGS_LIMITS, STORAGE_KEY } from "../shared/storage";
 import type { GhostSettings, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
-type ProfileDialogState = {
-  mode: "create" | "edit";
-  draft: Profile;
-};
-
-type NumberFieldKey = keyof Pick<Profile, "latitude" | "longitude" | "accuracy" | "deviceMemory">;
-type NumberFieldText = Record<NumberFieldKey, string>;
+type SectionId = "general" | "location" | "helium" | "profiles" | "sites" | "exclusions";
+type ToastTone = "info" | "success" | "error";
+type ToastState = { id: number; message: string; tone: ToastTone };
+type ConfirmKind = "reset" | "test";
 
 const root = createRoot(document.getElementById("root") ?? document.body);
 root.render(<OptionsApp />);
 
 function OptionsApp(): React.ReactElement {
   const [settings, setSettings] = React.useState<GhostSettings | null>(null);
+  const [savedSettings, setSavedSettings] = React.useState<GhostSettings | null>(null);
+  const [saving, setSaving] = React.useState(false);
   const [profileDialog, setProfileDialog] = React.useState<ProfileDialogState | null>(null);
+  const [confirm, setConfirm] = React.useState<ConfirmKind | null>(null);
   const [siteRuleInput, setSiteRuleInput] = React.useState("");
   const [excludeInput, setExcludeInput] = React.useState("");
-  const [status, setStatus] = React.useState("");
+  const [toast, setToast] = React.useState<ToastState | null>(null);
+  const [loadError, setLoadError] = React.useState("");
   const [synchronousProtectionAvailable, setSynchronousProtectionAvailable] = React.useState<boolean | null>(null);
   const [automaticLocationRefreshing, setAutomaticLocationRefreshing] = React.useState(false);
   const [automaticLocationSavedEnabled, setAutomaticLocationSavedEnabled] = React.useState(false);
-  const statusTimer = React.useRef<number | null>(null);
+  const [activeSection, setActiveSection] = React.useState<SectionId>("general");
+  const [detection, setDetection] = React.useState<HeliumFlagDetection | null>(null);
+  const [detecting, setDetecting] = React.useState(false);
+  const [platformInfo, setPlatformInfo] = React.useState<chrome.runtime.PlatformInfo | null>(null);
+  const toastTimer = React.useRef<number | null>(null);
+  const navLock = React.useRef<number | null>(null);
 
   const isAdvancedBuild = React.useMemo(() => chrome.runtime.getManifest().permissions?.includes("debugger") ?? false, []);
+  const version = React.useMemo(() => chrome.runtime.getManifest().version, []);
   const profiles = React.useMemo(
     () => settings ? allProfiles(settings.customProfiles, settings.hiddenPresetProfileIds) : [],
     [settings]
   );
+  const dirty = settings !== null && savedSettings !== null && !sameSettings(settings, savedSettings);
+  const loaded = settings !== null;
+
+  const navItems = React.useMemo<Array<NavItem & { id: SectionId }>>(() => [
+    { id: "general", label: t("navGeneral"), icon: SlidersHorizontal },
+    { id: "location", label: t("navLocation"), icon: MapPin },
+    { id: "helium", label: t("navHelium"), icon: Blocks },
+    { id: "profiles", label: t("profiles"), icon: Layers },
+    { id: "sites", label: t("siteRules"), icon: Route },
+    { id: "exclusions", label: t("excludedDomains"), icon: Ban }
+  ], []);
 
   React.useEffect(() => {
     localizeDocument();
     document.title = t("ghostOptions");
-    void sendMessage<GhostSettings>({ type: "options.getState" })
-      .then(async (value) => {
-        const nextSettings = normalizeSettings(value);
-        setSettings(nextSettings);
-        setAutomaticLocationSavedEnabled(nextSettings.automaticLocationEnabled);
-        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild));
-      })
-      .catch((error) => {
-        setSynchronousProtectionAvailable(false);
-        setStatus(errorText(error));
-      });
-  }, [isAdvancedBuild]);
+    try {
+      chrome.runtime.getPlatformInfo((info) => setPlatformInfo(info));
+    } catch {
+      // Platform info is informational only.
+    }
+  }, []);
 
   React.useEffect(() => {
     const handleStorageChange = (
@@ -97,24 +131,163 @@ function OptionsApp(): React.ReactElement {
       }
       const stored = normalizeSettings(change.newValue);
       setAutomaticLocationSavedEnabled(stored.automaticLocationEnabled);
-      setSettings((current) => current
+      const mergeLocation = (current: GhostSettings | null) => current
         ? normalizeSettings({ ...current, automaticLocation: stored.automaticLocation })
-        : stored);
+        : stored;
+      setSettings(mergeLocation);
+      setSavedSettings(mergeLocation);
     };
     chrome.storage.onChanged.addListener(handleStorageChange);
     return () => chrome.storage.onChanged.removeListener(handleStorageChange);
   }, []);
 
-  const flashStatus = React.useCallback((message: string) => {
-    setStatus(message);
-    if (statusTimer.current !== null) {
-      window.clearTimeout(statusTimer.current);
+  React.useEffect(() => {
+    if (!dirty) {
+      return;
     }
-    statusTimer.current = window.setTimeout(() => setStatus(""), 2200);
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  // Scroll spy: the active section is the last one whose top has passed a line
+  // 30% down the viewport. At the bottom of the page the final section wins
+  // even when it is too short to reach that line. Programmatic navigation
+  // locks the highlight until the smooth scroll settles so the tracker cannot
+  // briefly flip back to the previous section.
+  React.useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (navLock.current !== null) {
+        return;
+      }
+      const root = document.documentElement;
+      const atBottom = window.innerHeight + window.scrollY >= root.scrollHeight - 2;
+      const lastItem = navItems[navItems.length - 1];
+      if (atBottom && lastItem) {
+        setActiveSection(lastItem.id);
+        return;
+      }
+      const line = window.innerHeight * 0.3;
+      let current = navItems[0]?.id ?? "general";
+      for (const item of navItems) {
+        const element = document.getElementById(item.id);
+        if (element && element.getBoundingClientRect().top <= line) {
+          current = item.id;
+        }
+      }
+      setActiveSection(current);
+    };
+    const schedule = () => {
+      if (frame === 0) {
+        frame = window.requestAnimationFrame(update);
+      }
+    };
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, [loaded, navItems]);
+
+  const flashToast = React.useCallback((message: string, tone: ToastTone = "info") => {
+    setToast({ id: Date.now(), message, tone });
+    if (toastTimer.current !== null) {
+      window.clearTimeout(toastTimer.current);
+    }
+    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
   const updateSettings = React.useCallback((updater: (current: GhostSettings) => GhostSettings) => {
     setSettings((current) => current ? normalizeSettings(updater(current)) : current);
+  }, []);
+
+  const runDetection = React.useCallback(async (): Promise<HeliumFlagDetection | null> => {
+    setDetecting(true);
+    try {
+      const result = await detectHeliumFlags();
+      setDetection(result);
+      return result;
+    } catch {
+      return null;
+    } finally {
+      setDetecting(false);
+    }
+  }, []);
+
+  // Pushes detected flag effects through the background so open tabs are
+  // refreshed, then mirrors the three switches into both the draft and the
+  // saved baseline without disturbing other unsaved edits.
+  const syncDetectedFlags = React.useCallback(async (result: HeliumFlagDetection) => {
+    const synced = normalizeSettings(await sendMessage<GhostSettings>({ type: "syncHeliumFlags", detection: result }));
+    const surfaces = Object.fromEntries(HELIUM_SURFACE_KEYS.map((key) => [key, synced[key]]));
+    const mergeSurfaces = (current: GhostSettings | null) => current ? normalizeSettings({ ...current, ...surfaces }) : synced;
+    setSettings(mergeSurfaces);
+    setSavedSettings(mergeSurfaces);
+  }, []);
+
+  const redetect = React.useCallback(async () => {
+    const result = await runDetection();
+    const base = savedSettings;
+    if (!result || !base?.heliumFlagSync || sameHeliumSurfaces(base, applyHeliumFlagDetection(base, result))) {
+      return;
+    }
+    try {
+      await syncDetectedFlags(result);
+      flashToast(t("heliumFlagsUpdated"), "success");
+    } catch (error) {
+      flashToast(errorText(error), "error");
+    }
+  }, [flashToast, runDetection, savedSettings, syncDetectedFlags]);
+
+  React.useEffect(() => {
+    void sendMessage<GhostSettings>({ type: "options.getState" })
+      .then(async (value) => {
+        const nextSettings = normalizeSettings(value);
+        setSettings(nextSettings);
+        setSavedSettings(nextSettings);
+        setAutomaticLocationSavedEnabled(nextSettings.automaticLocationEnabled);
+        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild));
+        const result = await runDetection();
+        if (result && nextSettings.heliumFlagSync && !sameHeliumSurfaces(nextSettings, applyHeliumFlagDetection(nextSettings, result))) {
+          await syncDetectedFlags(result);
+          flashToast(t("heliumFlagsUpdated"), "success");
+        }
+      })
+      .catch((error) => {
+        setSynchronousProtectionAvailable(false);
+        setLoadError(errorText(error));
+      });
+  }, [flashToast, isAdvancedBuild, runDetection, syncDetectedFlags]);
+
+  const navigate = React.useCallback((id: string) => {
+    setActiveSection(id as SectionId);
+    const target = document.getElementById(id);
+    if (!target) {
+      return;
+    }
+    const release = () => {
+      if (navLock.current !== null) {
+        window.clearTimeout(navLock.current);
+        navLock.current = null;
+      }
+      window.removeEventListener("scrollend", release);
+    };
+    release();
+    navLock.current = window.setTimeout(release, 1200);
+    window.addEventListener("scrollend", release, { once: true });
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
 
   const openCreateProfile = React.useCallback(() => {
@@ -135,24 +308,24 @@ function OptionsApp(): React.ReactElement {
 
   const saveProfileDraft = React.useCallback((profile: Profile) => {
     if (settings && !settings.customProfiles.some((entry) => entry.id === profile.id) && settings.customProfiles.length >= SETTINGS_LIMITS.customProfiles) {
-      flashStatus(t("settingsLimitReached"));
+      flashToast(t("settingsLimitReached"), "error");
       return;
     }
     updateSettings((current) => {
       const customProfiles = current.customProfiles.filter((entry) => entry.id !== profile.id);
       return {
         ...current,
-        customProfiles: [...customProfiles, normalizeProfile(profile)],
+        customProfiles: [...customProfiles, normalizeProfileDraft(profile)],
         hiddenPresetProfileIds: current.hiddenPresetProfileIds.filter((id) => id !== profile.id)
       };
     });
     setProfileDialog(null);
-    flashStatus(t("profileSaved"));
-  }, [flashStatus, settings, updateSettings]);
+    flashToast(t("profileSaved"), "success");
+  }, [flashToast, settings, updateSettings]);
 
   const deleteProfile = React.useCallback((profile: Profile) => {
     if (profiles.length <= 1) {
-      flashStatus(t("cannotDeleteLastProfile"));
+      flashToast(t("cannotDeleteLastProfile"), "error");
       return;
     }
     updateSettings((current) => {
@@ -165,37 +338,48 @@ function OptionsApp(): React.ReactElement {
         hiddenPresetProfileIds
       };
     });
-    flashStatus(t("profileDeleted"));
-  }, [flashStatus, profiles.length, updateSettings]);
+    flashToast(t("profileDeleted"));
+  }, [flashToast, profiles.length, updateSettings]);
 
   const save = React.useCallback(async () => {
-    if (!settings) {
+    if (!settings || saving) {
       return;
     }
+    setSaving(true);
     try {
       const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
       const normalized = normalizeSettings(saved);
       setSettings(normalized);
+      setSavedSettings(normalized);
       setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
       setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
-      flashStatus(t("saved"));
+      flashToast(t("saved"), "success");
     } catch (error) {
-      flashStatus(errorText(error));
+      flashToast(errorText(error), "error");
+    } finally {
+      setSaving(false);
     }
-  }, [flashStatus, isAdvancedBuild, settings]);
+  }, [flashToast, isAdvancedBuild, saving, settings]);
+
+  const discard = React.useCallback(() => {
+    if (savedSettings) {
+      setSettings(savedSettings);
+    }
+  }, [savedSettings]);
 
   const reset = React.useCallback(async () => {
     try {
       const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
       const normalized = normalizeSettings(resetSettings);
       setSettings(normalized);
+      setSavedSettings(normalized);
       setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
       setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
-      flashStatus(t("resetDone"));
+      flashToast(t("resetDone"), "success");
     } catch (error) {
-      flashStatus(errorText(error));
+      flashToast(errorText(error), "error");
     }
-  }, [flashStatus, isAdvancedBuild]);
+  }, [flashToast, isAdvancedBuild]);
 
   const refreshAutomaticLocation = React.useCallback(async () => {
     if (!settings?.automaticLocationEnabled || !automaticLocationSavedEnabled || automaticLocationRefreshing) {
@@ -206,26 +390,28 @@ function OptionsApp(): React.ReactElement {
       const refreshed = normalizeSettings(await sendMessage<GhostSettings>({
         type: "options.refreshAutomaticLocation"
       }));
-      setSettings((current) => current
+      const mergeLocation = (current: GhostSettings | null) => current
         ? normalizeSettings({ ...current, automaticLocation: refreshed.automaticLocation })
-        : refreshed);
-      flashStatus(t("automaticLocationRefreshDone"));
+        : refreshed;
+      setSettings(mergeLocation);
+      setSavedSettings(mergeLocation);
+      flashToast(t("automaticLocationRefreshDone"), "success");
     } catch (error) {
-      flashStatus(errorText(error));
+      flashToast(errorText(error), "error");
     } finally {
       setAutomaticLocationRefreshing(false);
     }
-  }, [automaticLocationRefreshing, automaticLocationSavedEnabled, flashStatus, settings?.automaticLocationEnabled]);
+  }, [automaticLocationRefreshing, automaticLocationSavedEnabled, flashToast, settings?.automaticLocationEnabled]);
 
   const addExclusion = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const domain = normalizeExclusionRule(excludeInput);
     if (!domain) {
-      flashStatus(t("invalidExclusionRule"));
+      flashToast(t("invalidExclusionRule"), "error");
       return;
     }
     if (!settings?.excludedDomains.includes(domain) && (settings?.excludedDomains.length ?? 0) >= SETTINGS_LIMITS.exclusionRules) {
-      flashStatus(t("settingsLimitReached"));
+      flashToast(t("settingsLimitReached"), "error");
       return;
     }
     updateSettings((current) => ({
@@ -233,17 +419,17 @@ function OptionsApp(): React.ReactElement {
       excludedDomains: [...new Set([...current.excludedDomains, domain])]
     }));
     setExcludeInput("");
-  }, [excludeInput, flashStatus, settings, updateSettings]);
+  }, [excludeInput, flashToast, settings, updateSettings]);
 
   const addSiteRule = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const siteRule = normalizeSiteRuleKey(siteRuleInput);
     if (!siteRule) {
-      flashStatus(t("invalidSiteRule"));
+      flashToast(t("invalidSiteRule"), "error");
       return;
     }
     if (!settings?.siteProfiles[siteRule] && Object.keys(settings?.siteProfiles ?? {}).length >= SETTINGS_LIMITS.siteProfileRules) {
-      flashStatus(t("settingsLimitReached"));
+      flashToast(t("settingsLimitReached"), "error");
       return;
     }
     updateSettings((current) => {
@@ -257,781 +443,647 @@ function OptionsApp(): React.ReactElement {
       };
     });
     setSiteRuleInput("");
-  }, [flashStatus, settings, siteRuleInput, updateSettings]);
+  }, [flashToast, settings, siteRuleInput, updateSettings]);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (dirty) {
+          void save();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [dirty, save]);
 
   if (!settings) {
     return (
-      <main className="shell">
-        <div className="glass-panel p-8 text-sm text-muted-foreground" role="status" aria-live="polite">
-          {status || t("options")}
+      <div className="grid min-h-screen place-items-center p-6">
+        <div className="panel flex items-center gap-3 px-6 py-5 text-sm text-muted-foreground" role="status" aria-live="polite">
+          {loadError ? (
+            <>
+              <CircleAlert className="h-4 w-4 text-destructive" />
+              {loadError}
+            </>
+          ) : (
+            <>
+              <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
+              {t("loadingSettings")}
+            </>
+          )}
         </div>
-      </main>
+      </div>
     );
   }
 
+  const siteRules = sortedSiteProfiles(settings.siteProfiles);
+  const profileUsage = countProfileUsage(settings.siteProfiles);
+  const buildLabel = isAdvancedBuild ? t("buildAdvancedLabel") : t("buildLiteLabel");
+  const detectedLocation = settings.automaticLocationEnabled ? settings.automaticLocation : null;
+
   return (
-    <main className="shell">
-      <header className="hero-glass">
-        <div className="min-w-0">
-          <div className="eyebrow">Ghost</div>
-          <h1>{t("ghostOptions")}</h1>
-          <p>{t("optionsSubtitle")}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            onClick={() => {
-              if (window.confirm(t("fingerprintTestExternalConfirm"))) {
-                void chrome.tabs.create({ url: FINGERPRINT_TEST_URL });
-              }
-            }}
-          >
-            <Fingerprint className="h-4 w-4" />
-            {t("fingerprintTestExternal")}
-          </Button>
-          <Button variant="outline" onClick={() => void reset()}>
-            <RotateCcw className="h-4 w-4" />
-            {t("reset")}
-          </Button>
-        </div>
-      </header>
-
-      {synchronousProtectionAvailable === false ? (
-        <section className="glass-panel border-red-500/60" role="alert">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="mb-1 flex items-center gap-2 font-semibold text-red-600 dark:text-red-300">
-                <ShieldAlert className="h-5 w-5" />
-                {t("unprotected")}
-              </div>
-              <p className="text-sm text-muted-foreground">{t("enableUserScriptsRequired")}</p>
-            </div>
-            <Button variant="outline" onClick={() => void openUserScriptsSettingsPage().catch((error) => setStatus(errorText(error)))}>
-              {t("openExtensionSettings")}
-            </Button>
-          </div>
-        </section>
-      ) : null}
-
-      <section className="glass-panel">
-        <SectionTitle title={t("globalConfig")} description={t("globalConfigSubtitle")} />
-        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("globalProtection")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("globalProtectionSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.enabled}
-            onCheckedChange={(checked) => updateSettings((current) => ({ ...current, enabled: checked }))}
-            aria-label={t("globalProtection")}
-          />
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("globalPrivacyControl")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("globalPrivacyControlSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.globalPrivacyControlEnabled}
-            onCheckedChange={(checked) => updateSettings((current) => ({
-              ...current,
-              globalPrivacyControlEnabled: checked
-            }))}
-            aria-label={t("globalPrivacyControl")}
-          />
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {isAdvancedBuild ? t("buildAdvanced") : t("buildLite")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("advancedToggle")}</p>
-          </div>
-          <Switch
-            checked={settings.advancedEnabled}
-            disabled={!isAdvancedBuild}
-            onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
-            aria-label={t("advancedToggle")}
-          />
-        </div>
-      </section>
-
-      <section className="glass-panel">
-        <SectionTitle title={t("automaticLocation")} description={t("automaticLocationSubtitle")} />
-        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("automaticLocationEnabled")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("automaticLocationEnabledSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.automaticLocationEnabled}
-            onCheckedChange={(checked) => updateSettings((current) => ({
-              ...current,
-              automaticLocationEnabled: checked
-            }))}
-            aria-label={t("automaticLocationEnabled")}
-          />
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("automaticLanguage")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("automaticLanguageSubtitle")}</p>
-          </div>
-          <Select
-            disabled={!settings.automaticLocationEnabled}
-            value={settings.automaticLanguageMode}
-            onValueChange={(value) => updateSettings((current) => ({
-              ...current,
-              automaticLanguageMode: value === "auto" ? "auto" : "profile"
-            }))}
-          >
-            <SelectTrigger className="w-full md:w-52" aria-label={t("automaticLanguage")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="profile">{t("automaticLanguageProfile")}</SelectItem>
-              <SelectItem value="auto">{t("automaticLanguageAuto")}</SelectItem>
-            </SelectContent>
-          </Select>
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4 md:col-span-2">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div className="text-sm font-medium">{t("automaticLocationStatus")}</div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={
-                  !settings.automaticLocationEnabled
-                  || !automaticLocationSavedEnabled
-                  || automaticLocationRefreshing
-                }
-                onClick={() => void refreshAutomaticLocation()}
-                aria-label={t("automaticLocationRefresh")}
-                aria-busy={automaticLocationRefreshing}
-              >
-                <RefreshCw className={`h-4 w-4${automaticLocationRefreshing ? " animate-spin" : ""}`} />
-                {automaticLocationRefreshing ? t("automaticLocationRefreshing") : t("refresh")}
-              </Button>
-            </div>
-            <p className="text-sm text-muted-foreground">{automaticLocationSummary(settings)}</p>
-          </div>
-        </div>
-      </section>
-
-      <section className="glass-panel">
-        <SectionTitle title={t("heliumCompatibility")} description={t("heliumCompatibilitySubtitle")} />
-        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4 md:col-span-2">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("heliumManagedAudioHardware")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("heliumManagedAudioHardwareSubtitle")}</p>
-          </div>
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("useHeliumCanvasMeasureText")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("useHeliumCanvasMeasureTextSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.disableCanvasMeasureTextSpoofing}
-            onCheckedChange={(checked) => updateSettings((current) => ({
-              ...current,
-              disableCanvasMeasureTextSpoofing: checked
-            }))}
-            aria-label={t("useHeliumCanvasMeasureText")}
-          />
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("useHeliumWebglInfo")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("useHeliumWebglInfoSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.disableWebglInfoSpoofing}
-            onCheckedChange={(checked) => updateSettings((current) => ({
-              ...current,
-              disableWebglInfoSpoofing: checked
-            }))}
-            aria-label={t("useHeliumWebglInfo")}
-          />
-          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
-            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
-              <Activity className="h-4 w-4 text-primary" />
-              {t("useHeliumUaReduction")}
-            </div>
-            <p className="text-sm text-muted-foreground">{t("useHeliumUaReductionSubtitle")}</p>
-          </div>
-          <Switch
-            checked={settings.disableUserAgentSpoofing}
-            onCheckedChange={(checked) => updateSettings((current) => ({ ...current, disableUserAgentSpoofing: checked }))}
-            aria-label={t("useHeliumUaReduction")}
-          />
-        </div>
-      </section>
-
-      <section className="glass-panel">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <SectionTitle title={t("profiles")} description={t("profilesSubtitle")} />
-          <Button onClick={openCreateProfile}>
-            <Plus className="h-4 w-4" />
-            {t("addProfile")}
-          </Button>
-        </div>
-        <ProfilesTable
-          profiles={profiles}
-          hideUserAgentFields={settings.disableUserAgentSpoofing}
-          hideWebglFields={settings.disableWebglInfoSpoofing}
-          onEdit={openEditProfile}
-          onDelete={deleteProfile}
+    <TooltipProvider delayDuration={300}>
+      <div className="app">
+        <Sidebar
+          items={navItems}
+          activeId={activeSection}
+          isAdvancedBuild={isAdvancedBuild}
+          version={version}
+          protectionAvailable={synchronousProtectionAvailable}
+          onNavigate={navigate}
         />
-      </section>
 
-      <section className="glass-panel">
-        <SectionTitle title={t("siteRules")} description={t("siteRulesSubtitle")} />
-        <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={addSiteRule}>
-          <Input
-            value={siteRuleInput}
-            onChange={(event) => setSiteRuleInput(event.target.value)}
-            placeholder={t("siteRulePlaceholder")}
-            aria-label={t("siteRuleInputLabel")}
-          />
-          <Button type="submit" aria-label={t("addSiteRule")}>{t("addSiteRule")}</Button>
-        </form>
-        <Table className="mt-4">
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("site")}</TableHead>
-              <TableHead>{t("profile")}</TableHead>
-              <TableHead className="w-24 text-right">{t("actions")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sortedSiteProfiles(settings.siteProfiles).length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={3} className="text-muted-foreground">{t("noSiteRules")}</TableCell>
-              </TableRow>
-            ) : sortedSiteProfiles(settings.siteProfiles).map(([siteKey, profileId]) => (
-              <TableRow key={siteKey}>
-                <TableCell className="font-medium">{siteKey}</TableCell>
-                <TableCell>
+        <main className="content">
+          <header className="mb-10 flex flex-col gap-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div className="min-w-0">
+                <div className="eyebrow mb-2">Ghost · {buildLabel}</div>
+                <h1>{t("ghostOptions")}</h1>
+                <p className="mt-2 max-w-xl text-[15px] text-muted-foreground">{t("optionsSubtitle")}</p>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <Button variant="outline" onClick={() => setConfirm("test")}>
+                  <Fingerprint className="h-4 w-4" />
+                  {t("fingerprintTestExternal")}
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirm("reset")}>
+                  <RotateCcw className="h-4 w-4" />
+                  {t("reset")}
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <StatChip icon={Layers} count={profiles.length} label={t("profileCount")} onClick={() => navigate("profiles")} />
+              <StatChip icon={Route} count={siteRules.length} label={t("ruleCount")} onClick={() => navigate("sites")} />
+              <StatChip icon={Ban} count={settings.excludedDomains.length} label={t("exclusionCount")} onClick={() => navigate("exclusions")} />
+            </div>
+          </header>
+
+          {synchronousProtectionAvailable === false ? (
+            <section className="panel mb-10 flex flex-col gap-4 border-destructive/40 p-5 sm:flex-row sm:items-center sm:justify-between" role="alert">
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-destructive/12 text-destructive">
+                  <ShieldAlert className="h-5 w-5" />
+                </span>
+                <div>
+                  <div className="font-semibold text-destructive">{t("unprotected")}</div>
+                  <p className="mt-0.5 text-sm text-muted-foreground">{t("enableUserScriptsRequired")}</p>
+                </div>
+              </div>
+              <Button variant="outline" onClick={() => void openUserScriptsSettingsPage().catch((error) => flashToast(errorText(error), "error"))}>
+                {t("openExtensionSettings")}
+              </Button>
+            </section>
+          ) : null}
+
+          <div className="flex flex-col gap-14">
+            <Section id="general" icon={SlidersHorizontal} title={t("globalConfig")} description={t("globalConfigSubtitle")}>
+              <div className="panel divide-y divide-border/70">
+                <SettingRow icon={ShieldCheck} title={t("globalProtection")} description={t("globalProtectionSubtitle")}>
+                  <Switch
+                    checked={settings.enabled}
+                    onCheckedChange={(checked) => updateSettings((current) => ({ ...current, enabled: checked }))}
+                    aria-label={t("globalProtection")}
+                  />
+                </SettingRow>
+                <SettingRow icon={Hand} title={t("globalPrivacyControl")} description={t("globalPrivacyControlSubtitle")}>
+                  <Switch
+                    checked={settings.globalPrivacyControlEnabled}
+                    onCheckedChange={(checked) => updateSettings((current) => ({
+                      ...current,
+                      globalPrivacyControlEnabled: checked
+                    }))}
+                    aria-label={t("globalPrivacyControl")}
+                  />
+                </SettingRow>
+                <SettingRow
+                  icon={Terminal}
+                  disabled={!isAdvancedBuild}
+                  title={(
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      {t("advancedOverrides")}
+                      <Badge variant={isAdvancedBuild ? "success" : "outline"}>{buildLabel}</Badge>
+                    </span>
+                  )}
+                  description={isAdvancedBuild ? t("buildAdvanced") : `${t("advancedUnavailable")} ${t("buildLite")}`}
+                >
+                  <Switch
+                    checked={settings.advancedEnabled}
+                    disabled={!isAdvancedBuild}
+                    onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
+                    aria-label={t("advancedToggle")}
+                  />
+                </SettingRow>
+              </div>
+            </Section>
+
+            <Section id="location" icon={MapPin} title={t("automaticLocation")} description={t("automaticLocationSubtitle")}>
+              <div className="panel divide-y divide-border/70">
+                <SettingRow icon={Radar} title={t("automaticLocationEnabled")} description={t("automaticLocationEnabledSubtitle")}>
+                  <Switch
+                    checked={settings.automaticLocationEnabled}
+                    onCheckedChange={(checked) => updateSettings((current) => ({
+                      ...current,
+                      automaticLocationEnabled: checked
+                    }))}
+                    aria-label={t("automaticLocationEnabled")}
+                  />
+                </SettingRow>
+                <SettingRow
+                  icon={Languages}
+                  title={t("automaticLanguage")}
+                  description={t("automaticLanguageSubtitle")}
+                  disabled={!settings.automaticLocationEnabled}
+                >
                   <Select
-                    value={profileId}
+                    disabled={!settings.automaticLocationEnabled}
+                    value={settings.automaticLanguageMode}
                     onValueChange={(value) => updateSettings((current) => ({
                       ...current,
-                      siteProfiles: { ...current.siteProfiles, [siteKey]: value }
+                      automaticLanguageMode: value === "auto" ? "auto" : "profile"
                     }))}
                   >
-                    <SelectTrigger className="max-w-xs" aria-label={`${t("profile")}: ${siteKey}`}>
+                    <SelectTrigger className="w-56" aria-label={t("automaticLanguage")}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {profiles.map((profile) => (
-                        <SelectItem key={profile.id} value={profile.id}>{profile.label}</SelectItem>
-                      ))}
+                      <SelectItem value="profile">{t("automaticLanguageProfile")}</SelectItem>
+                      <SelectItem value="auto">{t("automaticLanguageAuto")}</SelectItem>
                     </SelectContent>
                   </Select>
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={siteKey === DEFAULT_SITE_RULE}
-                    onClick={() => updateSettings((current) => {
-                      const siteProfiles = { ...current.siteProfiles };
-                      delete siteProfiles[siteKey];
-                      return { ...current, siteProfiles };
-                    })}
-                  >
-                    {t("remove")}
+                </SettingRow>
+                <div className="px-5 py-4">
+                  <div className="panel-inset p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-sm font-semibold">
+                        <LocateFixed className="h-4 w-4 text-primary" />
+                        {t("automaticLocationStatus")}
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          !settings.automaticLocationEnabled
+                          || !automaticLocationSavedEnabled
+                          || automaticLocationRefreshing
+                        }
+                        onClick={() => void refreshAutomaticLocation()}
+                        aria-label={t("automaticLocationRefresh")}
+                        aria-busy={automaticLocationRefreshing}
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5${automaticLocationRefreshing ? " animate-spin" : ""}`} />
+                        {automaticLocationRefreshing ? t("automaticLocationRefreshing") : t("refresh")}
+                      </Button>
+                    </div>
+                    {detectedLocation ? (
+                      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm md:grid-cols-4">
+                        <Fact label={t("location")}>
+                          {[detectedLocation.city, detectedLocation.region, detectedLocation.country].filter(Boolean).join(", ") || detectedLocation.countryCode}
+                        </Fact>
+                        <Fact label={t("timezone")}>{detectedLocation.timezoneId}</Fact>
+                        <Fact label={t("coordinates")}>
+                          <span className="font-mono text-xs">{detectedLocation.latitude.toFixed(3)}, {detectedLocation.longitude.toFixed(3)}</span>
+                        </Fact>
+                        <Fact label={t("automaticLocationUpdated")}>{new Date(detectedLocation.updatedAt).toLocaleString()}</Fact>
+                      </dl>
+                    ) : (
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        {settings.automaticLocationEnabled ? t("automaticLocationPending") : t("automaticLocationDisabled")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </Section>
+
+            <Section id="helium" icon={Blocks} title={t("heliumCompatibility")} description={t("heliumCompatibilitySubtitle")}>
+              <div className="panel mb-4 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <ScanSearch className="h-4 w-4 text-primary" />
+                      {t("browserEnvironment")}
+                    </div>
+                    <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-muted-foreground">{t("browserEnvironmentSubtitle")}</p>
+                  </div>
+                  <Button variant="outline" size="sm" disabled={detecting} onClick={() => void redetect()} aria-busy={detecting}>
+                    <RefreshCw className={`h-3.5 w-3.5${detecting ? " animate-spin" : ""}`} />
+                    {detecting ? t("detecting") : t("redetect")}
                   </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </section>
-
-      <section className="glass-panel">
-        <SectionTitle title={t("excludedDomains")} description={t("excludedDomainsSubtitle")} />
-        <form className="mt-4 flex flex-col gap-2 sm:flex-row" onSubmit={addExclusion}>
-          <Input
-            value={excludeInput}
-            onChange={(event) => setExcludeInput(event.target.value)}
-            placeholder="example.com"
-            aria-label={t("exclusionRuleInputLabel")}
-          />
-          <Button type="submit" aria-label={t("addExclusion")}>{t("addExclusion")}</Button>
-        </form>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {settings.excludedDomains.length === 0 ? (
-            <span className="text-sm text-muted-foreground">{t("noExcludedDomains")}</span>
-          ) : settings.excludedDomains.map((domain) => (
-            <Badge key={domain} variant="secondary" className="gap-2 py-1">
-              {domain}
-              <button
-                type="button"
-                className="rounded-full px-1 text-muted-foreground hover:text-foreground"
-                onClick={() => updateSettings((current) => ({
-                  ...current,
-                  excludedDomains: current.excludedDomains.filter((entry) => entry !== domain)
-                }))}
-                aria-label={`${t("remove")} ${domain}`}
-              >
-                x
-              </button>
-            </Badge>
-          ))}
-        </div>
-      </section>
-
-      <footer className="save-bar">
-        <Button className="min-w-40" onClick={() => void save()}>
-          <Save className="h-4 w-4" />
-          {t("saveChanges")}
-        </Button>
-        <span className="text-sm text-muted-foreground" role="status" aria-live="polite">{status}</span>
-      </footer>
-
-      <Dialog open={profileDialog !== null} onOpenChange={(open) => !open && setProfileDialog(null)}>
-        {profileDialog ? (
-          <ProfileEditorDialog
-            state={profileDialog}
-            hideUserAgentFields={settings.disableUserAgentSpoofing}
-            hideWebglFields={settings.disableWebglInfoSpoofing}
-            onDraftChange={(draft) => setProfileDialog((current) => current ? { ...current, draft } : current)}
-            onCancel={() => setProfileDialog(null)}
-            onSave={saveProfileDraft}
-          />
-        ) : null}
-      </Dialog>
-    </main>
-  );
-}
-
-function SectionTitle({ title, description }: { title: string; description: string }): React.ReactElement {
-  return (
-    <div>
-      <h2>{title}</h2>
-      <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-    </div>
-  );
-}
-
-function ProfilesTable({
-  profiles,
-  hideUserAgentFields,
-  hideWebglFields,
-  onEdit,
-  onDelete
-}: {
-  profiles: Profile[];
-  hideUserAgentFields: boolean;
-  hideWebglFields: boolean;
-  onEdit: (profile: Profile) => void;
-  onDelete: (profile: Profile) => void;
-}): React.ReactElement {
-  return (
-    <Table className="mt-5">
-      <TableHeader>
-        <TableRow>
-          <TableHead>{t("profile")}</TableHead>
-          <TableHead>{t("locale")}</TableHead>
-          <TableHead>{t("timezoneLocation")}</TableHead>
-          {!hideUserAgentFields ? <TableHead>{t("platform")}</TableHead> : null}
-          <TableHead>{t("deviceMemory")}</TableHead>
-          {!hideWebglFields ? <TableHead>{t("webglSummary")}</TableHead> : null}
-          <TableHead className="w-36 text-right">{t("actions")}</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {profiles.map((profile) => (
-          <TableRow key={profile.id}>
-            <TableCell>
-              <div className="flex min-w-52 flex-col gap-1">
-                <span className="font-medium">{profile.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">{profile.id}</span>
+                </div>
+                <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 text-sm md:grid-cols-3">
+                  <Fact label={t("browser")}>
+                    {detection?.chromiumMajor ? `Chromium ${detection.chromiumMajor}` : "—"}
+                    {detection && detection.brands.length > 0 ? (
+                      <span className="text-muted-foreground">
+                        {" · "}
+                        {detection.brands.filter((entry) => !/not.*brand/i.test(entry.brand)).map((entry) => entry.brand).join(", ")}
+                      </span>
+                    ) : null}
+                  </Fact>
+                  <Fact label={t("system")}>{platformInfo ? `${osLabel(platformInfo.os)} · ${platformInfo.arch}` : "—"}</Fact>
+                  <Fact label={t("cpuCores")}>{detection?.hardwareConcurrency ?? "—"}</Fact>
+                  <Fact label="WebGL" className="col-span-2 md:col-span-2">
+                    <span className="inline-flex max-w-full items-center gap-2">
+                      <span className="truncate font-mono text-xs" title={detection ? `${detection.webglVendor ?? ""}\n${detection.webglRenderer ?? ""}` : undefined}>
+                        {detection ? (detection.webglRenderer?.trim() || t("unavailable")) : "—"}
+                      </span>
+                      {detection?.webglSpoofed ? <Badge variant="success">{t("spoofed")}</Badge> : null}
+                    </span>
+                  </Fact>
+                  <Fact label={t("clientHints")}>
+                    <ClientHintsValue detection={detection} />
+                  </Fact>
+                  <Fact label={t("measureTextProbe")}>
+                    {detection ? <DetectionBadge value={detection.measureTextNoise} /> : "—"}
+                  </Fact>
+                </dl>
+                <div className="mt-4 border-t border-border/70 pt-3 text-sm">
+                  {!detection ? (
+                    <p className="text-muted-foreground">{detecting ? t("detecting") : t("notProbedYet")}</p>
+                  ) : detectedHeliumFlagNames(detection).length === 0 ? (
+                    <p className="text-muted-foreground">{t("heliumFlagsSummaryNone")}</p>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{t("heliumFlagsSummarySome")}</span>
+                      {detectedHeliumFlagNames(detection).map((name) => (
+                        <code key={name} className="chip">#{name}</code>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </TableCell>
-            <TableCell>
-              <div className="min-w-36 text-sm">
-                <div>{profile.locale}</div>
-                <div className="text-xs text-muted-foreground">{profile.languages.join(", ")}</div>
+              <div className="panel divide-y divide-border/70">
+                <SettingRow icon={Wand2} title={t("heliumFlagSync")} description={t("heliumFlagSyncSubtitle")}>
+                  <Switch
+                    checked={settings.heliumFlagSync}
+                    onCheckedChange={(checked) => updateSettings((current) => {
+                      const next = { ...current, heliumFlagSync: checked };
+                      return checked && detection ? applyHeliumFlagDetection(next, detection) : next;
+                    })}
+                    aria-label={t("heliumFlagSync")}
+                  />
+                </SettingRow>
+                <SettingRow icon={AudioLines} title={t("heliumManagedAudioHardware")} description={t("heliumManagedAudioHardwareSubtitle")}>
+                  <Badge variant="secondary" className="hidden sm:inline-flex">{t("heliumOwned")}</Badge>
+                </SettingRow>
+                <SettingRow
+                  icon={Type}
+                  title={t("useHeliumCanvasMeasureText")}
+                  description={`${t("useHeliumCanvasMeasureTextSubtitle")} ${t("measureTextNoiseHint")}`}
+                >
+                  <DetectionBadge value={detection?.measureTextNoise} auto={settings.heliumFlagSync} />
+                  <Switch
+                    checked={settings.disableCanvasMeasureTextSpoofing}
+                    disabled={settings.heliumFlagSync}
+                    onCheckedChange={(checked) => updateSettings((current) => ({
+                      ...current,
+                      disableCanvasMeasureTextSpoofing: checked
+                    }))}
+                    aria-label={t("useHeliumCanvasMeasureText")}
+                  />
+                </SettingRow>
+                <SettingRow icon={Cpu} title={t("useHeliumWebglInfo")} description={t("useHeliumWebglInfoSubtitle")}>
+                  <DetectionBadge value={detection?.webglSpoofed} auto={settings.heliumFlagSync} />
+                  <Switch
+                    checked={settings.disableWebglInfoSpoofing}
+                    disabled={settings.heliumFlagSync}
+                    onCheckedChange={(checked) => updateSettings((current) => ({
+                      ...current,
+                      disableWebglInfoSpoofing: checked
+                    }))}
+                    aria-label={t("useHeliumWebglInfo")}
+                  />
+                </SettingRow>
+                <SettingRow icon={Monitor} title={t("useHeliumUaReduction")} description={t("useHeliumUaReductionSubtitle")}>
+                  <DetectionBadge value={detection?.uaReductionActive} auto={settings.heliumFlagSync} />
+                  <Switch
+                    checked={settings.disableUserAgentSpoofing}
+                    disabled={settings.heliumFlagSync}
+                    onCheckedChange={(checked) => updateSettings((current) => ({ ...current, disableUserAgentSpoofing: checked }))}
+                    aria-label={t("useHeliumUaReduction")}
+                  />
+                </SettingRow>
               </div>
-            </TableCell>
-            <TableCell>
-              <div className="min-w-48 text-sm">
-                <div>{profile.timezoneId}</div>
-                <div className="text-xs text-muted-foreground">{profile.latitude.toFixed(3)}, {profile.longitude.toFixed(3)}</div>
-              </div>
-            </TableCell>
-            {!hideUserAgentFields ? <TableCell>{platformLabel(profile.platform)}</TableCell> : null}
-            <TableCell>
-              <span className="text-sm">{profile.deviceMemory} GB</span>
-            </TableCell>
-            {!hideWebglFields ? <TableCell>
-              <div className="max-w-56 truncate text-sm" title={`${profile.webglVendor} ${profile.webglRenderer}`}>
-                {profile.webglVendor}
-              </div>
-            </TableCell> : null}
-            <TableCell className="text-right">
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => onEdit(profile)}>
-                  <Edit3 className="h-3.5 w-3.5" />
-                  {t("edit")}
+            </Section>
+
+            <Section
+              id="profiles"
+              icon={Layers}
+              title={t("profiles")}
+              description={t("profilesSubtitle")}
+              actions={(
+                <Button onClick={openCreateProfile}>
+                  <Plus className="h-4 w-4" />
+                  {t("addProfile")}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => onDelete(profile)}>
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {t("delete")}
-                </Button>
-              </div>
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-function ProfileEditorDialog({
-  state,
-  hideUserAgentFields,
-  hideWebglFields,
-  onDraftChange,
-  onCancel,
-  onSave
-}: {
-  state: ProfileDialogState;
-  hideUserAgentFields: boolean;
-  hideWebglFields: boolean;
-  onDraftChange: (profile: Profile) => void;
-  onCancel: () => void;
-  onSave: (profile: Profile) => void;
-}): React.ReactElement {
-  const draft = state.draft;
-  const [languageText, setLanguageText] = React.useState(() => draft.languages.join(", "));
-  const [numberText, setNumberText] = React.useState<NumberFieldText>(() => numberTextFromProfile(draft));
-
-  React.useEffect(() => {
-    setLanguageText(draft.languages.join(", "));
-    setNumberText(numberTextFromProfile(draft));
-  }, [draft.id]);
-
-  const update = <K extends keyof Profile,>(key: K, value: Profile[K]) => {
-    onDraftChange({ ...draft, [key]: value });
-  };
-  const updateNumberText = (key: NumberFieldKey, value: string) => {
-    setNumberText((current) => ({ ...current, [key]: value }));
-  };
-  const commitNumberText = (key: NumberFieldKey) => {
-    const numeric = numberFromText(numberText[key], draft[key]);
-    setNumberText((current) => ({ ...current, [key]: String(numeric) }));
-    update(key, numeric);
-  };
-  const commitLanguageText = () => {
-    const languages = splitList(languageText);
-    setLanguageText(languages.join(", "));
-    update("languages", languages);
-  };
-  const applyLocale = (locale: string) => {
-    const next = applyLocalePreset(withRawProfileEdits(draft, languageText, numberText), locale);
-    setLanguageText(next.languages.join(", "));
-    setNumberText(numberTextFromProfile(next));
-    onDraftChange(next);
-  };
-  const saveDraft = () => onSave(withRawProfileEdits(draft, languageText, numberText));
-
-  return (
-    <DialogContent
-      onInteractOutside={(event) => event.preventDefault()}
-      onPointerDownOutside={(event) => event.preventDefault()}
-    >
-      <DialogHeader>
-        <DialogTitle>{state.mode === "create" ? t("addProfile") : t("editProfile")}</DialogTitle>
-        <DialogDescription>{t("profilesSubtitle")}</DialogDescription>
-      </DialogHeader>
-
-      <div className="grid gap-5">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label={t("label")}>
-            <Input aria-label={t("label")} value={draft.label} onChange={(event) => update("label", event.target.value)} />
-          </Field>
-          <Field label={t("profileId")}>
-            <Input aria-label={t("profileId")} value={draft.id} disabled />
-          </Field>
-          <Field label={t("locale")}>
-            <Select value={draft.locale} onValueChange={applyLocale}>
-              <SelectTrigger aria-label={t("locale")}>
-                <SelectValue placeholder={t("selectLocale")} />
-              </SelectTrigger>
-              <SelectContent>
-                {LOCALE_PRESETS.map((preset) => (
-                  <SelectItem key={preset.locale} value={preset.locale}>{preset.label}</SelectItem>
+              )}
+            >
+              <div className="grid gap-4 md:grid-cols-2">
+                {profiles.map((profile) => (
+                  <ProfileCard
+                    key={profile.id}
+                    profile={profile}
+                    isPreset={PRESET_PROFILE_IDS.has(profile.id) && !settings.customProfiles.some((entry) => entry.id === profile.id)}
+                    usedByRules={profileUsage.get(profile.id) ?? 0}
+                    canDelete={profiles.length > 1}
+                    hideUserAgentFields={settings.disableUserAgentSpoofing}
+                    hideWebglFields={settings.disableWebglInfoSpoofing}
+                    onEdit={() => openEditProfile(profile)}
+                    onDelete={() => deleteProfile(profile)}
+                  />
                 ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          {!hideUserAgentFields ? (
-            <>
-              <Field label={t("platform")}>
-                <Select value={draft.platform} onValueChange={(value) => update("platform", value)}>
-                  <SelectTrigger aria-label={t("platform")}>
-                    <SelectValue placeholder={t("selectPlatform")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PLATFORM_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                <AddProfileCard onClick={openCreateProfile} />
+              </div>
+              <p className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Info className="h-3.5 w-3.5" />
+                {t("seedNote")}
+              </p>
+            </Section>
+
+            <Section id="sites" icon={Route} title={t("siteRules")} description={t("siteRulesSubtitle")}>
+              <div className="panel overflow-hidden">
+                <form className="flex flex-col gap-2 border-b border-border/70 p-4 sm:flex-row" onSubmit={addSiteRule}>
+                  <div className="relative flex-1">
+                    <Globe className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      className="pl-9 font-mono"
+                      value={siteRuleInput}
+                      onChange={(event) => setSiteRuleInput(event.target.value)}
+                      placeholder={t("siteRulePlaceholder")}
+                      aria-label={t("siteRuleInputLabel")}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <Button type="submit" variant="secondary" aria-label={t("addSiteRule")}>
+                    <Plus className="h-4 w-4" />
+                    {t("addSiteRule")}
+                  </Button>
+                </form>
+                <ul className="divide-y divide-border/70">
+                  {siteRules.map(([siteKey, profileId]) => {
+                    const isDefault = siteKey === DEFAULT_SITE_RULE;
+                    return (
+                      <li key={siteKey} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <span className="icon-tile h-8 w-8 rounded-lg">
+                            {isDefault ? <Asterisk className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
+                          </span>
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="truncate font-mono text-sm font-medium">{siteKey}</span>
+                            {isDefault ? <Badge variant="soft">{t("defaultRule")}</Badge> : null}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Select
+                            value={profileId}
+                            onValueChange={(value) => updateSettings((current) => ({
+                              ...current,
+                              siteProfiles: { ...current.siteProfiles, [siteKey]: value }
+                            }))}
+                          >
+                            <SelectTrigger className="h-9 w-full sm:w-60" aria-label={`${t("profile")}: ${siteKey}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {profiles.map((profile) => (
+                                <SelectItem key={profile.id} value={profile.id}>{profile.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="hover:bg-destructive/10 hover:text-destructive"
+                                disabled={isDefault}
+                                aria-label={`${t("remove")} ${siteKey}`}
+                                onClick={() => updateSettings((current) => {
+                                  const siteProfiles = { ...current.siteProfiles };
+                                  delete siteProfiles[siteKey];
+                                  return { ...current, siteProfiles };
+                                })}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>{t("remove")}</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {siteRules.length <= 1 ? (
+                  <EmptyState icon={Route} title={t("noSiteRules")} hint={t("siteRuleEmptyHint")} />
+                ) : null}
+              </div>
+            </Section>
+
+            <Section id="exclusions" icon={Ban} title={t("excludedDomains")} description={t("excludedDomainsSubtitle")}>
+              <div className="panel overflow-hidden">
+                <form className="flex flex-col gap-2 border-b border-border/70 p-4 sm:flex-row" onSubmit={addExclusion}>
+                  <div className="relative flex-1">
+                    <Ban className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      className="pl-9 font-mono"
+                      value={excludeInput}
+                      onChange={(event) => setExcludeInput(event.target.value)}
+                      placeholder="example.com/login"
+                      aria-label={t("exclusionRuleInputLabel")}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <Button type="submit" variant="secondary" aria-label={t("addExclusion")}>
+                    <Plus className="h-4 w-4" />
+                    {t("addExclusion")}
+                  </Button>
+                </form>
+                {settings.excludedDomains.length === 0 ? (
+                  <EmptyState icon={Ban} title={t("noExcludedDomains")} hint={t("exclusionEmptyHint")} />
+                ) : (
+                  <div className="flex flex-wrap gap-2 p-4">
+                    {settings.excludedDomains.map((domain) => (
+                      <span key={domain} className="chip">
+                        {domain}
+                        <button
+                          type="button"
+                          onClick={() => updateSettings((current) => ({
+                            ...current,
+                            excludedDomains: current.excludedDomains.filter((entry) => entry !== domain)
+                          }))}
+                          aria-label={`${t("remove")} ${domain}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
                     ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label={t("architecture")}>
-                <Select value={draft.architecture} onValueChange={(value) => update("architecture", value)}>
-                  <SelectTrigger aria-label={t("architecture")}>
-                    <SelectValue placeholder={t("selectArchitecture")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ARCHITECTURE_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            </>
-          ) : null}
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
-          <Field label={t("languages")}>
-            <Input
-              aria-label={t("languages")}
-              value={languageText}
-              onBlur={commitLanguageText}
-              onChange={(event) => setLanguageText(event.target.value)}
-            />
-          </Field>
-          <Field label={t("acceptLanguage")}>
-            <Input aria-label={t("acceptLanguage")} value={draft.acceptLanguage} onChange={(event) => update("acceptLanguage", event.target.value)} />
-          </Field>
-          <Field label={t("intlLocale")}>
-            <Input aria-label={t("intlLocale")} value={draft.intlLocale} onChange={(event) => update("intlLocale", event.target.value)} />
-          </Field>
-          <Field label={t("timezone")} className="md:col-span-2">
-            <TimezonePicker
-              profile={draft}
-              onTimezoneChange={(timezoneId) => update("timezoneId", timezoneId)}
-            />
-          </Field>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-3">
-          <Field label={t("latitude")}>
-            <Input
-              aria-label={t("latitude")}
-              inputMode="decimal"
-              value={numberText.latitude}
-              onBlur={() => commitNumberText("latitude")}
-              onChange={(event) => updateNumberText("latitude", event.target.value)}
-            />
-          </Field>
-          <Field label={t("longitude")}>
-            <Input
-              aria-label={t("longitude")}
-              inputMode="decimal"
-              value={numberText.longitude}
-              onBlur={() => commitNumberText("longitude")}
-              onChange={(event) => updateNumberText("longitude", event.target.value)}
-            />
-          </Field>
-          <Field label={t("accuracy")}>
-            <Input
-              aria-label={t("accuracy")}
-              inputMode="decimal"
-              value={numberText.accuracy}
-              onBlur={() => commitNumberText("accuracy")}
-              onChange={(event) => updateNumberText("accuracy", event.target.value)}
-            />
-          </Field>
-        </div>
-
-        <details className="rounded-lg border border-border/70 bg-background/40 p-4">
-          <summary className="cursor-pointer text-sm font-medium">{t("advancedSettings")}</summary>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label={t("deviceMemory")}>
-              <Input
-                aria-label={t("deviceMemory")}
-                inputMode="numeric"
-                value={numberText.deviceMemory}
-                onBlur={() => commitNumberText("deviceMemory")}
-                onChange={(event) => updateNumberText("deviceMemory", event.target.value)}
-              />
-            </Field>
-            {!hideUserAgentFields ? (
-              <Field label={t("userAgent")} className="md:col-span-2">
-                <Textarea aria-label={t("userAgent")} value={draft.userAgent} onChange={(event) => update("userAgent", event.target.value)} />
-              </Field>
-            ) : null}
-            {!hideWebglFields ? (
-              <>
-                <Field label={t("webglVendor")}>
-                  <Input aria-label={t("webglVendor")} value={draft.webglVendor} onChange={(event) => update("webglVendor", event.target.value)} />
-                </Field>
-                <Field label={t("webglRenderer")} className="md:col-span-2">
-                  <Textarea aria-label={t("webglRenderer")} value={draft.webglRenderer} onChange={(event) => update("webglRenderer", event.target.value)} />
-                </Field>
-              </>
-            ) : null}
+                  </div>
+                )}
+              </div>
+            </Section>
           </div>
-        </details>
+        </main>
+
+        <div className="save-bar" data-visible={dirty || saving} aria-hidden={!dirty && !saving}>
+          <span className="flex items-center gap-2 text-sm font-medium">
+            <span className={`h-2 w-2 rounded-full ${saving ? "bg-primary animate-pulse" : "bg-warning"}`} />
+            {saving ? t("saving") : t("unsavedChanges")}
+          </span>
+          <Button variant="ghost" size="sm" onClick={discard} disabled={saving || !dirty}>{t("discard")}</Button>
+          <Button size="sm" className="rounded-full px-4" onClick={() => void save()} disabled={saving || !dirty}>
+            <Save className="h-3.5 w-3.5" />
+            {t("saveChanges")}
+          </Button>
+        </div>
+
+        {toast ? (
+          <div key={toast.id} className="toast" data-tone={toast.tone} role="status" aria-live="polite">
+            {toast.tone === "success" ? <CircleCheck className="h-4 w-4 text-success" /> : null}
+            {toast.tone === "error" ? <CircleAlert className="h-4 w-4 text-destructive" /> : null}
+            {toast.tone === "info" ? <Info className="h-4 w-4 text-primary" /> : null}
+            <span>{toast.message}</span>
+          </div>
+        ) : null}
+
+        <ConfirmDialog
+          open={confirm === "reset"}
+          onOpenChange={(open) => setConfirm(open ? "reset" : null)}
+          icon={RotateCcw}
+          title={t("confirmResetTitle")}
+          description={t("confirmResetDescription")}
+          confirmLabel={t("reset")}
+          destructive
+          onConfirm={() => void reset()}
+        />
+        <ConfirmDialog
+          open={confirm === "test"}
+          onOpenChange={(open) => setConfirm(open ? "test" : null)}
+          icon={Fingerprint}
+          title={t("externalTestTitle")}
+          description={t("fingerprintTestExternalConfirm")}
+          confirmLabel={t("confirmContinue")}
+          onConfirm={() => void chrome.tabs.create({ url: FINGERPRINT_TEST_URL })}
+        />
+
+        <Dialog open={profileDialog !== null} onOpenChange={(open) => !open && setProfileDialog(null)}>
+          {profileDialog ? (
+            <ProfileEditorDialog
+              state={profileDialog}
+              hideUserAgentFields={settings.disableUserAgentSpoofing}
+              hideWebglFields={settings.disableWebglInfoSpoofing}
+              onDraftChange={(draft) => setProfileDialog((current) => current ? { ...current, draft } : current)}
+              onCancel={() => setProfileDialog(null)}
+              onSave={saveProfileDraft}
+            />
+          ) : null}
+        </Dialog>
       </div>
-
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>{t("cancel")}</Button>
-        <Button onClick={saveDraft}>{t("saveProfile")}</Button>
-      </DialogFooter>
-    </DialogContent>
+    </TooltipProvider>
   );
 }
 
-function Field({
+function StatChip({
+  icon: Icon,
+  count,
   label,
-  children,
-  className
+  onClick
 }: {
+  icon: LucideIcon;
+  count: number;
   label: string;
-  children: React.ReactNode;
-  className?: string;
+  onClick: () => void;
 }): React.ReactElement {
   return (
-    <div className={className}>
-      <Label className="mb-2 block text-muted-foreground">{label}</Label>
-      {children}
+    <button type="button" className="stat-chip" onClick={onClick}>
+      <Icon className="h-3.5 w-3.5" />
+      <strong>{count}</strong>
+      {label}
+    </button>
+  );
+}
+
+function DetectionBadge({ value, auto }: { value: boolean | null | undefined; auto?: boolean }): React.ReactElement | null {
+  if (value === undefined) {
+    return null;
+  }
+  const label = value === null ? t("unavailable") : value ? t("detected") : t("notDetected");
+  return (
+    <Badge variant={value ? "success" : "outline"} className="hidden sm:inline-flex">
+      {auto ? `${t("autoManaged")} · ${label}` : label}
+    </Badge>
+  );
+}
+
+function ClientHintsValue({ detection }: { detection: HeliumFlagDetection | null }): React.ReactElement {
+  if (!detection) {
+    return <>—</>;
+  }
+  if (detection.clientHintsRemoved === null) {
+    return <>{t("unavailable")}</>;
+  }
+  if (detection.clientHintsRemoved) {
+    return <Badge variant="success">{t("clientHintsRemoved")}</Badge>;
+  }
+  if (detection.systemInfoReduced) {
+    return <Badge variant="success">{t("clientHintsLowEntropy")}</Badge>;
+  }
+  return <>{t("clientHintsFull")}</>;
+}
+
+function osLabel(os: string): string {
+  switch (os) {
+    case "mac":
+      return "macOS";
+    case "win":
+      return "Windows";
+    case "linux":
+      return "Linux";
+    case "cros":
+      return "ChromeOS";
+    case "android":
+      return "Android";
+    default:
+      return os;
+  }
+}
+
+function Fact({ label, children, className }: { label: string; children: React.ReactNode; className?: string }): React.ReactElement {
+  return (
+    <div className={`min-w-0${className ? ` ${className}` : ""}`}>
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 truncate">{children}</dd>
     </div>
   );
 }
 
-function numberTextFromProfile(profile: Profile): NumberFieldText {
-  return {
-    latitude: String(profile.latitude),
-    longitude: String(profile.longitude),
-    accuracy: String(profile.accuracy),
-    deviceMemory: String(profile.deviceMemory)
-  };
-}
-
-function numberFromText(value: string, fallback: number): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function withRawProfileEdits(profile: Profile, languageText: string, numberText: NumberFieldText): Profile {
-  return {
-    ...profile,
-    languages: splitList(languageText),
-    latitude: numberFromText(numberText.latitude, profile.latitude),
-    longitude: numberFromText(numberText.longitude, profile.longitude),
-    accuracy: numberFromText(numberText.accuracy, profile.accuracy),
-    deviceMemory: numberFromText(numberText.deviceMemory, profile.deviceMemory)
-  };
-}
-
-function TimezonePicker({
-  profile,
-  onTimezoneChange
-}: {
-  profile: Profile;
-  onTimezoneChange: (timezoneId: string) => void;
-}): React.ReactElement {
-  const selectedTimezoneId = normalizeTimezoneId(profile.timezoneId);
-  const profileRegion = timezoneRegion(selectedTimezoneId);
-  const [region, setRegion] = React.useState(profileRegion);
-  const regions = React.useMemo(() => timezoneRegions(selectedTimezoneId), [selectedTimezoneId]);
-  const regionTimezones = React.useMemo(() => timezonesForRegion(region, selectedTimezoneId), [region, selectedTimezoneId]);
-  const effectiveTimezoneId = regionTimezones.includes(selectedTimezoneId)
-    ? selectedTimezoneId
-    : regionTimezones[0] ?? selectedTimezoneId;
-
-  React.useEffect(() => {
-    setRegion(profileRegion);
-  }, [profileRegion]);
-
-  const handleRegionChange = React.useCallback((nextRegion: string) => {
-    setRegion(nextRegion);
-    const nextTimezones = timezonesForRegion(nextRegion, selectedTimezoneId);
-    if (!nextTimezones.includes(selectedTimezoneId) && nextTimezones[0]) {
-      onTimezoneChange(nextTimezones[0]);
-    }
-  }, [onTimezoneChange, selectedTimezoneId]);
-
+function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }): React.ReactElement {
   return (
-    <div className="timezone-controls">
-      <Select value={region} onValueChange={handleRegionChange}>
-        <SelectTrigger aria-label={t("region")}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {regions.map((entry) => (
-            <SelectItem key={entry} value={entry}>{entry}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Select value={effectiveTimezoneId} onValueChange={onTimezoneChange}>
-        <SelectTrigger aria-label={t("timezone")}>
-          <SelectValue placeholder={t("selectTimezone")} />
-        </SelectTrigger>
-        <SelectContent>
-          {regionTimezones.map((entry) => (
-            <SelectItem key={entry} value={entry}>{timezoneLabel(entry)}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+    <div className="flex flex-col items-center gap-2 px-6 py-10 text-center">
+      <span className="grid h-11 w-11 place-items-center rounded-full bg-muted text-muted-foreground">
+        <Icon className="h-5 w-5" />
+      </span>
+      <div className="text-sm font-semibold">{title}</div>
+      <p className="max-w-sm text-xs text-muted-foreground">{hint}</p>
     </div>
   );
 }
 
-function normalizeProfile(profile: Profile): Profile {
-  return {
-    ...profile,
-    id: profile.id.trim(),
-    label: profile.label.trim() || t("profile"),
-    locale: profile.locale.trim(),
-    intlLocale: profile.intlLocale.trim(),
-    languages: profile.languages.map((entry) => entry.trim()).filter(Boolean),
-    timezoneId: normalizeTimezoneId(profile.timezoneId.trim()),
-    acceptLanguage: profile.acceptLanguage.trim(),
-    platform: profile.platform.trim() || "Win32",
-    architecture: normalizeArchitecture(profile.architecture),
-    userAgent: typeof profile.userAgent === "string" ? profile.userAgent.trim() : "",
-    uaMode: "desktop-chromium",
-    canvasSeedPolicy: "site",
-    latitude: finiteOr(profile.latitude, 0),
-    longitude: finiteOr(profile.longitude, 0),
-    accuracy: finiteOr(profile.accuracy, 80),
-    deviceMemory: Math.max(1, Math.round(finiteOr(profile.deviceMemory, 8))),
-    webglVendor: profile.webglVendor.trim(),
-    webglRenderer: profile.webglRenderer.trim()
-  };
+function sameSettings(left: GhostSettings, right: GhostSettings): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function splitList(value: string): string[] {
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
-}
-
-function finiteOr(value: number, fallback: number): number {
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function normalizeArchitecture(value: unknown): string {
-  return value === "arm" ? "arm" : "x86";
+function countProfileUsage(siteProfiles: Record<string, string>): Map<string, number> {
+  const usage = new Map<string, number>();
+  for (const profileId of Object.values(siteProfiles)) {
+    usage.set(profileId, (usage.get(profileId) ?? 0) + 1);
+  }
+  return usage;
 }
 
 function sortedSiteProfiles(siteProfiles: Record<string, string>): Array<[string, string]> {
@@ -1044,23 +1096,6 @@ function sortedSiteProfiles(siteProfiles: Record<string, string>): Array<[string
     }
     return left.localeCompare(right);
   });
-}
-
-function automaticLocationSummary(settings: GhostSettings): string {
-  if (!settings.automaticLocationEnabled) {
-    return t("automaticLocationDisabled");
-  }
-  const location = settings.automaticLocation;
-  if (!location) {
-    return t("automaticLocationPending");
-  }
-  const place = [location.city, location.region, location.country].filter(Boolean).join(", ");
-  const updated = new Date(location.updatedAt).toLocaleString();
-  return `${place || location.countryCode} · ${location.timezoneId} · ${t("automaticLocationUpdated")} ${updated}`;
-}
-
-function platformLabel(value: string): string {
-  return PLATFORM_OPTIONS.find((option) => option.value === value)?.label ?? value;
 }
 
 function sendMessage<T = unknown>(message: RuntimeRequest): Promise<T> {

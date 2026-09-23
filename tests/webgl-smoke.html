@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Ghost WebGL / WebGPU smoke</title>
+    <style>body{font:14px/1.5 system-ui,sans-serif;margin:24px}pre{white-space:pre-wrap}</style>
+  </head>
+  <body>
+    <p>Open this file in a browser with Ghost installed. Every <code>unmasked*</code> and <code>webgpu</code> value should match the active profile; <code>vendor</code>/<code>renderer</code> must stay <code>WebKit</code>/<code>WebKit WebGL</code>, and every <code>*ToString</code> entry must read as native code. Chromium refuses module workers from <code>blob:null/</code> URLs on <code>file://</code> pages, so <code>moduleBlobWorker</code> only works when this page is served over http(s). Same-origin URL workers are intentionally left native.</p>
+    <pre id="output">pending</pre>
+    <script>
+      (async () => {
+        const out = {};
+        const gl = document.createElement("canvas").getContext("webgl");
+        const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+        out.vendor = gl && gl.getParameter(gl.VENDOR);
+        out.renderer = gl && gl.getParameter(gl.RENDERER);
+        out.unmaskedVendor = ext && gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+        out.unmaskedRenderer = ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+        out.extensionTag = Object.prototype.toString.call(ext);
+        out.getParameterToString = WebGLRenderingContext.prototype.getParameter.toString();
+        out.getExtensionToString = WebGLRenderingContext.prototype.getExtension.toString();
+        out.workerToString = Worker.toString();
+        out.dateToStringToString = Date.prototype.toString.toString();
+
+        const workerCode = `
+          const canvas = new OffscreenCanvas(8, 8);
+          const gl = canvas.getContext("webgl");
+          const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+          self.postMessage({
+            vendor: gl && gl.getParameter(gl.VENDOR),
+            unmaskedVendor: ext && gl.getParameter(ext.UNMASKED_VENDOR_WEBGL),
+            unmaskedRenderer: ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+          });`;
+        const runBlobWorker = (type) => new Promise((resolve) => {
+          const url = URL.createObjectURL(new Blob([workerCode], { type: "text/javascript" }));
+          const worker = new Worker(url, type ? { type } : undefined);
+          worker.onmessage = (event) => { resolve(event.data); worker.terminate(); };
+          worker.onerror = (event) => resolve({ error: event.message });
+          setTimeout(() => resolve({ error: "timeout" }), 4000);
+        });
+        out.classicBlobWorker = await runBlobWorker();
+        out.moduleBlobWorker = await runBlobWorker("module");
+
+        if (navigator.gpu) {
+          try {
+            const adapter = await navigator.gpu.requestAdapter();
+            out.webgpu = adapter
+              ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, device: adapter.info.device, description: adapter.info.description }
+              : "no adapter";
+          } catch (error) {
+            out.webgpu = `error: ${error.message}`;
+          }
+        } else {
+          out.webgpu = "navigator.gpu unavailable";
+        }
+        document.getElementById("output").textContent = JSON.stringify(out, null, 2);
+      })();
+    </script>
+  </body>
+</html>
