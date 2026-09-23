@@ -130,7 +130,12 @@ function optionForProfile(profile: Profile): HTMLOptionElement {
 }
 
 function renderProfile(profile: Profile): void {
-  elements.profileLabel.textContent = profile.label;
+  const automaticLocation = currentState?.settings.automaticLocationEnabled
+    ? currentState.settings.automaticLocation
+    : null;
+  elements.profileLabel.textContent = automaticLocation
+    ? `${profile.label} · Auto (${automaticLocation.countryCode})`
+    : profile.label;
   elements.profileDetails.textContent = currentState?.supportedPage
     ? `${profile.locale} | ${profile.timezoneId} | ${profile.latitude.toFixed(3)}, ${profile.longitude.toFixed(3)}`
     : currentState?.fileAccessRequired

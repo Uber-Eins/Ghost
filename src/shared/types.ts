@@ -1,6 +1,18 @@
 export type BuildTarget = "lite" | "advanced";
 
 export type UaMode = "desktop-chromium" | "native";
+export type AutomaticLanguageMode = "auto" | "profile";
+
+export interface AutomaticLocation {
+  timezoneId: string;
+  latitude: number;
+  longitude: number;
+  countryCode: string;
+  country: string;
+  region: string;
+  city: string;
+  updatedAt: number;
+}
 
 export interface Profile {
   id: string;
@@ -30,6 +42,9 @@ export interface GhostSettings {
   disableUserAgentSpoofing: boolean;
   disableCanvasMeasureTextSpoofing: boolean;
   disableWebglInfoSpoofing: boolean;
+  automaticLocationEnabled: boolean;
+  automaticLanguageMode: AutomaticLanguageMode;
+  automaticLocation: AutomaticLocation | null;
   siteProfiles: Record<string, string>;
   siteNonces: Record<string, number>;
   excludedDomains: string[];
@@ -82,6 +97,7 @@ export type RuntimeRequest =
   | { type: "setTemporaryDisable"; durationMs: number }
   | { type: "options.getState" }
   | { type: "options.saveState"; settings: GhostSettings }
+  | { type: "options.refreshAutomaticLocation" }
   | { type: "options.resetState" };
 
 export type RuntimeResponse =

@@ -11,6 +11,7 @@ import {
 import type { GhostSettings, Profile, ResolvedProfile, BuildTarget } from "./types";
 import { stableSeed } from "./hash";
 import { normalizeTimezoneId } from "./locations";
+import { applyAutomaticLocation, normalizeAutomaticLocation } from "./automatic-location";
 
 export const STORAGE_KEY = "ghost.settings";
 export const EXCLUDED_DEFAULTS_VERSION = 1;
@@ -32,6 +33,9 @@ export const DEFAULT_SETTINGS: GhostSettings = {
   disableUserAgentSpoofing: false,
   disableCanvasMeasureTextSpoofing: false,
   disableWebglInfoSpoofing: false,
+  automaticLocationEnabled: false,
+  automaticLanguageMode: "profile",
+  automaticLocation: null,
   siteProfiles: {
     [DEFAULT_SITE_RULE]: defaultProfileIdForSiteRule(DEFAULT_SITE_RULE, allProfiles([]), 0)
   },
@@ -68,6 +72,12 @@ export function normalizeSettings(input: unknown): GhostSettings {
       candidate.disableWebglInfoSpoofing,
       DEFAULT_SETTINGS.disableWebglInfoSpoofing
     ),
+    automaticLocationEnabled: booleanValue(
+      candidate.automaticLocationEnabled,
+      DEFAULT_SETTINGS.automaticLocationEnabled
+    ),
+    automaticLanguageMode: candidate.automaticLanguageMode === "auto" ? "auto" : "profile",
+    automaticLocation: normalizeAutomaticLocation(candidate.automaticLocation),
     siteProfiles: ensureDefaultSiteProfile(siteProfiles, profiles, siteNonces),
     siteNonces,
     excludedDomains: normalizeExcludedDomains(candidate.excludedDomains, candidate.excludedDefaultsVersion),
@@ -151,7 +161,10 @@ export function resolveProfile(
   // exclusions still work) and the trusted tab URL as `partitionUrl`.
   const siteKey = siteKeyFromUrl(partitionUrl);
   const profileId = profileIdForSiteKey(siteKey, settings);
-  const profile = findProfile(profileId, settings.customProfiles, settings.hiddenPresetProfileIds);
+  const profile = effectiveProfileForSettings(
+    findProfile(profileId, settings.customProfiles, settings.hiddenPresetProfileIds),
+    settings
+  );
   const temporarilyDisabled = isTemporarilyDisabled(settings, now);
   const excluded = isExcludedUrl(url, settings.excludedDomains);
   const enabled = settings.enabled && !temporarilyDisabled && !excluded;
@@ -176,6 +189,12 @@ export function resolveProfile(
       applied: false
     }
   };
+}
+
+export function effectiveProfileForSettings(profile: Profile, settings: GhostSettings): Profile {
+  return settings.automaticLocationEnabled
+    ? applyAutomaticLocation(profile, settings.automaticLocation, settings.automaticLanguageMode)
+    : profile;
 }
 
 export function profileIdForSiteKey(siteKey: string, settings: GhostSettings): string {

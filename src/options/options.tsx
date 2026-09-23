@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Edit3, Fingerprint, Plus, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { Activity, Edit3, Fingerprint, Plus, RefreshCw, RotateCcw, Save, ShieldAlert, Trash2 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
 import {
@@ -39,7 +39,7 @@ import { openUserScriptsSettingsPage, repairContentBootstrap } from "../backgrou
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
-import { normalizeSettings, profileIdForSiteKey, SETTINGS_LIMITS } from "../shared/storage";
+import { normalizeSettings, profileIdForSiteKey, SETTINGS_LIMITS, STORAGE_KEY } from "../shared/storage";
 import type { GhostSettings, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 type ProfileDialogState = {
@@ -60,6 +60,8 @@ function OptionsApp(): React.ReactElement {
   const [excludeInput, setExcludeInput] = React.useState("");
   const [status, setStatus] = React.useState("");
   const [synchronousProtectionAvailable, setSynchronousProtectionAvailable] = React.useState<boolean | null>(null);
+  const [automaticLocationRefreshing, setAutomaticLocationRefreshing] = React.useState(false);
+  const [automaticLocationSavedEnabled, setAutomaticLocationSavedEnabled] = React.useState(false);
   const statusTimer = React.useRef<number | null>(null);
 
   const isAdvancedBuild = React.useMemo(() => chrome.runtime.getManifest().permissions?.includes("debugger") ?? false, []);
@@ -75,6 +77,7 @@ function OptionsApp(): React.ReactElement {
       .then(async (value) => {
         const nextSettings = normalizeSettings(value);
         setSettings(nextSettings);
+        setAutomaticLocationSavedEnabled(nextSettings.automaticLocationEnabled);
         setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild));
       })
       .catch((error) => {
@@ -82,6 +85,25 @@ function OptionsApp(): React.ReactElement {
         setStatus(errorText(error));
       });
   }, [isAdvancedBuild]);
+
+  React.useEffect(() => {
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string
+    ) => {
+      const change = changes[STORAGE_KEY];
+      if (areaName !== "local" || !change?.newValue) {
+        return;
+      }
+      const stored = normalizeSettings(change.newValue);
+      setAutomaticLocationSavedEnabled(stored.automaticLocationEnabled);
+      setSettings((current) => current
+        ? normalizeSettings({ ...current, automaticLocation: stored.automaticLocation })
+        : stored);
+    };
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
 
   const flashStatus = React.useCallback((message: string) => {
     setStatus(message);
@@ -154,6 +176,7 @@ function OptionsApp(): React.ReactElement {
       const saved = await sendMessage<GhostSettings>({ type: "options.saveState", settings: normalizeSettings(settings) });
       const normalized = normalizeSettings(saved);
       setSettings(normalized);
+      setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
       setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
       flashStatus(t("saved"));
     } catch (error) {
@@ -166,12 +189,33 @@ function OptionsApp(): React.ReactElement {
       const resetSettings = await sendMessage<GhostSettings>({ type: "options.resetState" });
       const normalized = normalizeSettings(resetSettings);
       setSettings(normalized);
+      setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
       setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
       flashStatus(t("resetDone"));
     } catch (error) {
       flashStatus(errorText(error));
     }
   }, [flashStatus, isAdvancedBuild]);
+
+  const refreshAutomaticLocation = React.useCallback(async () => {
+    if (!settings?.automaticLocationEnabled || !automaticLocationSavedEnabled || automaticLocationRefreshing) {
+      return;
+    }
+    setAutomaticLocationRefreshing(true);
+    try {
+      const refreshed = normalizeSettings(await sendMessage<GhostSettings>({
+        type: "options.refreshAutomaticLocation"
+      }));
+      setSettings((current) => current
+        ? normalizeSettings({ ...current, automaticLocation: refreshed.automaticLocation })
+        : refreshed);
+      flashStatus(t("automaticLocationRefreshDone"));
+    } catch (error) {
+      flashStatus(errorText(error));
+    } finally {
+      setAutomaticLocationRefreshing(false);
+    }
+  }, [automaticLocationRefreshing, automaticLocationSavedEnabled, flashStatus, settings?.automaticLocationEnabled]);
 
   const addExclusion = React.useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -312,6 +356,71 @@ function OptionsApp(): React.ReactElement {
             onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
             aria-label={t("advancedToggle")}
           />
+        </div>
+      </section>
+
+      <section className="glass-panel">
+        <SectionTitle title={t("automaticLocation")} description={t("automaticLocationSubtitle")} />
+        <div className="mt-4 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("automaticLocationEnabled")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("automaticLocationEnabledSubtitle")}</p>
+          </div>
+          <Switch
+            checked={settings.automaticLocationEnabled}
+            onCheckedChange={(checked) => updateSettings((current) => ({
+              ...current,
+              automaticLocationEnabled: checked
+            }))}
+            aria-label={t("automaticLocationEnabled")}
+          />
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4">
+            <div className="mb-1 flex items-center gap-2 text-sm font-medium">
+              <Activity className="h-4 w-4 text-primary" />
+              {t("automaticLanguage")}
+            </div>
+            <p className="text-sm text-muted-foreground">{t("automaticLanguageSubtitle")}</p>
+          </div>
+          <Select
+            disabled={!settings.automaticLocationEnabled}
+            value={settings.automaticLanguageMode}
+            onValueChange={(value) => updateSettings((current) => ({
+              ...current,
+              automaticLanguageMode: value === "auto" ? "auto" : "profile"
+            }))}
+          >
+            <SelectTrigger className="w-full md:w-52" aria-label={t("automaticLanguage")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="profile">{t("automaticLanguageProfile")}</SelectItem>
+              <SelectItem value="auto">{t("automaticLanguageAuto")}</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="rounded-lg border border-border/70 bg-background/45 p-4 md:col-span-2">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="text-sm font-medium">{t("automaticLocationStatus")}</div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  !settings.automaticLocationEnabled
+                  || !automaticLocationSavedEnabled
+                  || automaticLocationRefreshing
+                }
+                onClick={() => void refreshAutomaticLocation()}
+                aria-label={t("automaticLocationRefresh")}
+                aria-busy={automaticLocationRefreshing}
+              >
+                <RefreshCw className={`h-4 w-4${automaticLocationRefreshing ? " animate-spin" : ""}`} />
+                {automaticLocationRefreshing ? t("automaticLocationRefreshing") : t("refresh")}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">{automaticLocationSummary(settings)}</p>
+          </div>
         </div>
       </section>
 
@@ -935,6 +1044,19 @@ function sortedSiteProfiles(siteProfiles: Record<string, string>): Array<[string
     }
     return left.localeCompare(right);
   });
+}
+
+function automaticLocationSummary(settings: GhostSettings): string {
+  if (!settings.automaticLocationEnabled) {
+    return t("automaticLocationDisabled");
+  }
+  const location = settings.automaticLocation;
+  if (!location) {
+    return t("automaticLocationPending");
+  }
+  const place = [location.city, location.region, location.country].filter(Boolean).join(", ");
+  const updated = new Date(location.updatedAt).toLocaleString();
+  return `${place || location.countryCode} · ${location.timezoneId} · ${t("automaticLocationUpdated")} ${updated}`;
 }
 
 function platformLabel(value: string): string {

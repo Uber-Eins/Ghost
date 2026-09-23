@@ -10,7 +10,7 @@ import {
   requestPathStartRegexFilter,
   siteRuleSpecificity
 } from "../shared/site";
-import { headerRulesAllowed, profilesFromSettings } from "../shared/storage";
+import { effectiveProfileForSettings, headerRulesAllowed, profilesFromSettings } from "../shared/storage";
 import type { GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 const RULE_ID_BASE = 700000;
@@ -194,7 +194,7 @@ function buildRules(settings: GhostSettings): chrome.declarativeNetRequest.Rule[
     return rules;
   }
 
-  const profiles = profilesFromSettings(settings);
+  const profiles = profilesFromSettings(settings).map((profile) => effectiveProfileForSettings(profile, settings));
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
   for (const exclusion of settings.excludedDomains) {
     for (const rule of allowRulesForExclusion(exclusion, usedRuleIds)) {

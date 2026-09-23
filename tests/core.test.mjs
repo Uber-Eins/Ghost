@@ -792,6 +792,49 @@ test("resolveProfile respects global disable and exclusions", () => {
   assert.equal(resolveProfile("http://[::1]:3000/private", fileAndIpv6, "lite").enabled, false);
 });
 
+test("Auto network location follows a VPN exit while language remains user-selectable", () => {
+  const detected = {
+    country: "Taiwan",
+    countryCode: "TW",
+    region: "Taipei",
+    city: "Banqiao",
+    timezoneId: "Asia/Taipei",
+    longitude: 121.46719,
+    latitude: 25.01427,
+    updatedAt: 1_786_000_000_000
+  };
+
+  const automatic = normalizeSettings({
+    ...DEFAULT_SETTINGS,
+    excludedDomains: [],
+    automaticLocationEnabled: true,
+    automaticLanguageMode: "auto",
+    automaticLocation: detected,
+    siteProfiles: { [DEFAULT_SITE_RULE]: "los-angeles-en-us" }
+  });
+  const resolved = resolveProfile("https://example.com", automatic, "advanced");
+  assert.equal(resolved.profile.id, "los-angeles-en-us");
+  assert.equal(resolved.profile.timezoneId, "Asia/Taipei");
+  assert.equal(resolved.profile.latitude, 25.01427);
+  assert.equal(resolved.profile.longitude, 121.46719);
+  assert.equal(resolved.profile.locale, "zh-TW");
+  assert.deepEqual(resolved.profile.languages.slice(0, 2), ["zh-TW", "zh"]);
+
+  const requestRules = buildHeaderRulesForTesting(automatic);
+  const acceptLanguage = requestRules
+    .flatMap((rule) => rule.action.type === "modifyHeaders" ? rule.action.requestHeaders : [])
+    .find((header) => header.header.toLowerCase() === "accept-language");
+  assert.match(acceptLanguage?.value ?? "", /^zh-TW,/);
+
+  const preserved = resolveProfile("https://example.com", normalizeSettings({
+    ...automatic,
+    automaticLanguageMode: "profile"
+  }), "advanced");
+  assert.equal(preserved.profile.timezoneId, "Asia/Taipei");
+  assert.equal(preserved.profile.locale, "en-US");
+  assert.equal(preserved.seed, resolved.seed);
+});
+
 test("settings migration keeps profile visibility explicit", () => {
   const legacy = normalizeSettings({
     enabled: true,

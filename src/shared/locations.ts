@@ -620,12 +620,16 @@ export function supportedTimezones(): string[] {
 }
 
 export function normalizeTimezoneId(timezoneId: string): string {
+  return supportedTimezoneIdOrNull(timezoneId) ?? DEFAULT_TIMEZONE;
+}
+
+export function supportedTimezoneIdOrNull(timezoneId: string): string | null {
   const candidates = [
     timezoneId,
     canonicalTimezoneId(timezoneId),
     ...(TIMEZONE_ALIASES[timezoneId] ?? [])
   ].filter((entry): entry is string => Boolean(entry));
-  return candidates.find((entry) => SUPPORTED_TIMEZONE_SET.has(entry)) ?? DEFAULT_TIMEZONE;
+  return candidates.find((entry) => SUPPORTED_TIMEZONE_SET.has(entry)) ?? null;
 }
 
 function canonicalTimezoneId(timezoneId: string): string | undefined {

@@ -1,8 +1,10 @@
 import { applyAdvancedOverrides, clearAdvancedOverrides } from "./advanced";
 import type { AdvancedResult } from "./advanced";
+import { fetchAutomaticLocation } from "./automatic-location";
 import { isSynchronousContentBootstrapAvailable, refreshContentBootstrap } from "./bootstrap";
 import { clearTabHeaderRule, clearTabHeaderRules, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
 import { stableSeed } from "../shared/hash";
+import { sameAutomaticLocation } from "../shared/automatic-location";
 import { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl, unsupportedPageLabel } from "../shared/internal";
 import { findProfile } from "../shared/profiles";
 import { bestMatchingSiteRule, DEFAULT_SITE_RULE, exclusionsForSiteToggle, isExcludedUrl, normalizeSiteRuleKey, siteKeyFromUrl } from "../shared/site";
@@ -25,24 +27,30 @@ declare const __GHOST_CHANNEL__: string;
 const ENABLED_ICON_PATHS = iconSet("enabled");
 const DISABLED_ICON_PATHS = iconSet("disabled");
 const TEMPORARY_DISABLE_EXPIRED_ALARM = "ghost-temporary-disable-expired";
+const AUTOMATIC_LOCATION_REFRESH_ALARM = "ghost-automatic-location-refresh";
+const AUTOMATIC_LOCATION_REFRESH_MINUTES = 5;
+const AUTOMATIC_LOCATION_FRESH_MS = AUTOMATIC_LOCATION_REFRESH_MINUTES * 60_000;
 const SUPPORTED_TAB_URL_PATTERNS = ["http://*/*", "https://*/*", "file:///*"];
 let settingsRevision = 0;
 let settingsRefreshRevision = 0;
 let settingsRefreshQueue: Promise<void> = Promise.resolve();
 let settingsApplicationQueue: Promise<void> = Promise.resolve();
+let automaticLocationRefresh: Promise<GhostSettings> | null = null;
 const tabOverrideRevisions = new Map<number, number>();
 
 chrome.runtime.onInstalled.addListener(() => {
-  runBackgroundTask(initialize());
+  runBackgroundTask(initialize().then(() => synchronizeAutomaticLocation(true)));
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  runBackgroundTask(initialize());
+  runBackgroundTask(initialize().then(() => synchronizeAutomaticLocation(true)));
 });
 
 chrome.alarms?.onAlarm.addListener((alarm) => {
   if (alarm.name === TEMPORARY_DISABLE_EXPIRED_ALARM) {
     runBackgroundTask(handleTemporaryDisableExpired());
+  } else if (alarm.name === AUTOMATIC_LOCATION_REFRESH_ALARM) {
+    runBackgroundTask(synchronizeAutomaticLocation(true));
   }
 });
 
@@ -59,6 +67,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
   const revision = nextTabOverrideRevision(tabId);
   runBackgroundTask(refreshTabForNavigation(tabId, changeInfo.url, revision));
+  if (isSupportedPageUrl(changeInfo.url)) {
+    runBackgroundTask(synchronizeAutomaticLocation(false));
+  }
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeRequest, sender, sendResponse: (response: RuntimeResponse) => void) => {
@@ -140,12 +151,21 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
         settings.temporaryDisabledUntil = message.durationMs > 0 ? Date.now() + message.durationMs : null;
       });
     case "options.getState":
-      return readAppliedSettings();
-    case "options.saveState":
-      return mutateAndRefresh((settings) => {
+      // The options UI only needs the latest atomically stored settings. It
+      // must not wait for CDP/header refreshes running for other tabs.
+      return readSettings();
+    case "options.saveState": {
+      const settings = await mutateAndRefresh((draft) => {
         const normalized = normalizeSettings(message.settings);
-        Object.assign(settings, normalized);
+        Object.assign(draft, normalized);
       });
+      if (settings.automaticLocationEnabled) {
+        runBackgroundTask(synchronizeAutomaticLocation(true));
+      }
+      return settings;
+    }
+    case "options.refreshAutomaticLocation":
+      return synchronizeAutomaticLocation(true);
     case "options.resetState":
       return mutateAndRefresh((settings) => {
         Object.assign(settings, normalizeSettings(DEFAULT_SETTINGS));
@@ -407,6 +427,7 @@ async function refreshAfterSettingsChange(settings: GhostSettings): Promise<void
 async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refreshRevision: number): Promise<void> {
   const steps: Array<() => Promise<void>> = [
     () => scheduleTemporaryDisableAlarm(settings),
+    () => scheduleAutomaticLocationAlarm(settings),
     () => refreshContentBootstrap(settings, __GHOST_BUILD__),
     () => clearTabHeaderRules(),
     () => refreshHeaderRules(settings),
@@ -444,6 +465,64 @@ async function scheduleTemporaryDisableAlarm(settings: GhostSettings): Promise<v
       when: settings.temporaryDisabledUntil
     });
   }
+}
+
+async function scheduleAutomaticLocationAlarm(settings: GhostSettings): Promise<void> {
+  if (!chrome.alarms) {
+    return;
+  }
+  await chrome.alarms.clear(AUTOMATIC_LOCATION_REFRESH_ALARM).catch(() => false);
+  if (settings.automaticLocationEnabled) {
+    await chrome.alarms.create(AUTOMATIC_LOCATION_REFRESH_ALARM, {
+      periodInMinutes: AUTOMATIC_LOCATION_REFRESH_MINUTES
+    });
+  }
+}
+
+async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettings> {
+  // Network I/O is deliberately kept outside settingsApplicationQueue. That
+  // queue also performs debugger/header work and can legitimately take time
+  // when many tabs are open.
+  const settings = await readSettings();
+  if (!settings.automaticLocationEnabled) {
+    return settings;
+  }
+  if (
+    !force
+    && settings.automaticLocation
+    && Date.now() - settings.automaticLocation.updatedAt < AUTOMATIC_LOCATION_FRESH_MS
+  ) {
+    return settings;
+  }
+  if (automaticLocationRefresh) {
+    return automaticLocationRefresh;
+  }
+
+  automaticLocationRefresh = fetchAutomaticLocation()
+    .then((location) => applyAutomaticLocationNow(location))
+    .finally(() => {
+      automaticLocationRefresh = null;
+    });
+  return automaticLocationRefresh;
+}
+
+async function applyAutomaticLocationNow(location: NonNullable<GhostSettings["automaticLocation"]>): Promise<GhostSettings> {
+  let effectiveLocationChanged = false;
+  const settings = await updateSettings((draft) => {
+    if (!draft.automaticLocationEnabled) {
+      return;
+    }
+    effectiveLocationChanged = !sameAutomaticLocation(draft.automaticLocation, location);
+    draft.automaticLocation = location;
+  });
+  if (effectiveLocationChanged) {
+    settingsRevision += 1;
+    // Persisting the detected result completes the refresh request. Reapplying
+    // it to every open tab continues in the background instead of blocking all
+    // runtime messages and the options page.
+    runBackgroundTask(refreshAfterSettingsChange(settings));
+  }
+  return settings;
 }
 
 async function refreshKnownTabOverrides(settings: GhostSettings): Promise<void> {
