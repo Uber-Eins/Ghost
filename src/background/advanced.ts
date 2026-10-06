@@ -26,12 +26,18 @@ export interface AdvancedResult {
   error?: string;
 }
 
-export async function applyAdvancedOverrides(tabId: number, profile: Profile): Promise<AdvancedResult> {
+export async function applyAdvancedOverrides(
+  tabId: number,
+  profile: Profile,
+  isCurrent: () => boolean = () => true
+): Promise<AdvancedResult> {
   if (!chrome.debugger) {
     return { attempted: false, applied: false };
   }
 
-  return enqueueDebuggerOperation(tabId, () => applyAdvancedOverridesNow(tabId, profile));
+  return enqueueDebuggerOperation(tabId, () => isCurrent()
+    ? applyAdvancedOverridesNow(tabId, profile)
+    : Promise.resolve({ attempted: false, applied: false }));
 }
 
 async function applyAdvancedOverridesNow(tabId: number, profile: Profile): Promise<AdvancedResult> {
@@ -61,12 +67,12 @@ async function applyAdvancedOverridesNow(tabId: number, profile: Profile): Promi
   }
 }
 
-export async function clearAdvancedOverrides(tabId: number): Promise<void> {
+export async function clearAdvancedOverrides(tabId: number, isCurrent: () => boolean = () => true): Promise<void> {
   if (!chrome.debugger) {
     return;
   }
 
-  await enqueueDebuggerOperation(tabId, () => clearAdvancedOverridesNow(tabId));
+  await enqueueDebuggerOperation(tabId, () => isCurrent() ? clearAdvancedOverridesNow(tabId) : Promise.resolve());
 }
 
 async function clearAdvancedOverridesNow(tabId: number): Promise<void> {

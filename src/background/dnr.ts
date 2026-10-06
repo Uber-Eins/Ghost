@@ -51,18 +51,31 @@ const MAX_GHOST_GLOBAL_RULES = 4500;
 const MAX_GHOST_REGEX_RULES = 900;
 
 let dnrRefreshQueue: Promise<void> = Promise.resolve();
+let globalDnrRefreshQueue: Promise<void> = Promise.resolve();
 const regexValidationCache = new Set<string>();
 
 export function refreshHeaderRules(settings: GhostSettings): Promise<void> {
-  return enqueueDnrUpdate(() => refreshHeaderRulesNow(settings));
+  const pending = globalDnrRefreshQueue.then(
+    () => refreshHeaderRulesNow(settings),
+    () => refreshHeaderRulesNow(settings)
+  );
+  globalDnrRefreshQueue = pending.then(() => undefined, () => undefined);
+  return pending;
 }
 
-export function refreshTabHeaderRule(tabId: number, resolved: ResolvedProfile, settings: GhostSettings): Promise<void> {
-  return enqueueDnrUpdate(() => refreshTabHeaderRuleNow(tabId, resolved, settings));
+export function refreshTabHeaderRule(
+  tabId: number,
+  resolved: ResolvedProfile,
+  settings: GhostSettings,
+  isCurrent: () => boolean = () => true
+): Promise<void> {
+  return enqueueDnrUpdate(() => isCurrent()
+    ? refreshTabHeaderRuleNow(tabId, resolved, settings, isCurrent)
+    : Promise.resolve());
 }
 
-export function clearTabHeaderRule(tabId: number): Promise<void> {
-  return enqueueDnrUpdate(() => clearTabHeaderRuleNow(tabId));
+export function clearTabHeaderRule(tabId: number, isCurrent: () => boolean = () => true): Promise<void> {
+  return enqueueDnrUpdate(() => isCurrent() ? clearTabHeaderRuleNow(tabId, isCurrent) : Promise.resolve());
 }
 
 export function clearTabHeaderRules(): Promise<void> {
@@ -91,7 +104,12 @@ function enqueueDnrUpdate(operation: () => Promise<void>): Promise<void> {
   return pending;
 }
 
-async function refreshTabHeaderRuleNow(tabId: number, resolved: ResolvedProfile, settings: GhostSettings): Promise<void> {
+async function refreshTabHeaderRuleNow(
+  tabId: number,
+  resolved: ResolvedProfile,
+  settings: GhostSettings,
+  isCurrent: () => boolean
+): Promise<void> {
   if (!chrome.declarativeNetRequest) {
     return;
   }
@@ -103,6 +121,9 @@ async function refreshTabHeaderRuleNow(tabId: number, resolved: ResolvedProfile,
     usedRuleIds.delete(ruleId);
   }
   const addRules = tabRulesForResolvedPage(tabId, resolved, settings, usedRuleIds);
+  if (!isCurrent() || (removeRuleIds.length === 0 && addRules.length === 0)) {
+    return;
+  }
   await chrome.declarativeNetRequest.updateSessionRules({
     removeRuleIds,
     addRules
@@ -132,14 +153,14 @@ function tabRulesForResolvedPage(
   return tabRulesForSpecialPage(tabId, resolved.profile, !settings.disableUserAgentSpoofing, usedRuleIds);
 }
 
-async function clearTabHeaderRuleNow(tabId: number): Promise<void> {
+async function clearTabHeaderRuleNow(tabId: number, isCurrent: () => boolean): Promise<void> {
   if (!chrome.declarativeNetRequest) {
     return;
   }
 
   const existingRules = await chrome.declarativeNetRequest.getSessionRules();
   const removeRuleIds = existingRules.filter((rule) => ruleAppliesToTab(rule, tabId)).map((rule) => rule.id);
-  if (removeRuleIds.length > 0) {
+  if (isCurrent() && removeRuleIds.length > 0) {
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds });
   }
 }

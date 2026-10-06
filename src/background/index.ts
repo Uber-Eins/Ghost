@@ -2,7 +2,7 @@ import { applyAdvancedOverrides, clearAdvancedOverrides } from "./advanced";
 import type { AdvancedResult } from "./advanced";
 import { fetchAutomaticLocation } from "./automatic-location";
 import { isSynchronousContentBootstrapAvailable, refreshContentBootstrap } from "./bootstrap";
-import { clearTabHeaderRule, clearTabHeaderRules, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
+import { clearTabHeaderRule, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
 import { stableSeed } from "../shared/hash";
 import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetection, sameHeliumSurfaces } from "../shared/helium-detect";
 import type { HeliumFlagDetection } from "../shared/helium-detect";
@@ -38,6 +38,7 @@ let settingsRefreshRevision = 0;
 let settingsRefreshQueue: Promise<void> = Promise.resolve();
 let settingsApplicationQueue: Promise<void> = Promise.resolve();
 let automaticLocationRefresh: Promise<GhostSettings> | null = null;
+let initialization: Promise<void> | null = null;
 const tabOverrideRevisions = new Map<number, number>();
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -87,8 +88,17 @@ chrome.runtime.onMessage.addListener((message: RuntimeRequest, sender, sendRespo
   return true;
 });
 
+// A service-worker wake is not necessarily an onStartup/onInstalled event.
+// Reconcile persisted global protection on each new worker instance; reuse
+// the same promise if an install/startup event arrives in this instance.
+runBackgroundTask(initialize());
+
 function initialize(): Promise<void> {
-  return enqueueSettingsApplication(initializeNow);
+  if (!initialization) {
+    initialization = enqueueSettingsApplication(initializeNow);
+    void initialization.catch(() => { initialization = null; });
+  }
+  return initialization;
 }
 
 async function initializeNow(): Promise<void> {
@@ -161,9 +171,9 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
     case "syncHeliumFlags":
       return applyDetectedHeliumFlags(normalizeHeliumFlagDetection(message.detection));
     case "options.getState":
-      // The options UI only needs the latest atomically stored settings. It
-      // must not wait for CDP/header refreshes running for other tabs.
-      return readSettings();
+      // Wait for the short global commit, never the detached tab fan-outs.
+      // This also avoids UI bootstrap repair racing cold-worker registration.
+      return readAppliedSettings();
     case "options.saveState": {
       const settings = await mutateAndRefresh((draft) => {
         const normalized = normalizeSettings(message.settings);
@@ -221,7 +231,9 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (tabId !== null && tabRevision === currentTabOverrideRevision(tabId)) {
-    await refreshTabHeaderRule(tabId, resolved, settings);
+    await refreshTabHeaderRule(tabId, resolved, settings, () => (
+      revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
+    ));
   }
 
   if (revision !== settingsRevision) {
@@ -229,15 +241,10 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (tabId !== null) {
-    const advanced = await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
-    if (advanced) {
-      resolved.advanced = {
-        available: true,
-        attempted: advanced.attempted,
-        applied: advanced.applied,
-        error: advanced.error
-      };
-    }
+    // The synchronous bootstrap/page profile is already usable. Do not hold
+    // its reply behind a paused or unresponsive debugger target. Advanced
+    // metadata stays unapplied in this reply; it is not a completion report.
+    runBackgroundTask(refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision));
   }
 
   if (revision !== settingsRevision) {
@@ -276,27 +283,30 @@ async function refreshAdvancedOverrideForTab(
   settings: GhostSettings,
   tabRevision: number
 ): Promise<AdvancedResult | null> {
-  if (__GHOST_BUILD__ !== "advanced" || tabRevision !== currentTabOverrideRevision(tabId)) {
+  const revision = settingsRevision;
+  const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
+  if (__GHOST_BUILD__ !== "advanced" || !isCurrent()) {
     return null;
   }
   let result: AdvancedResult;
   if (resolved.enabled && settings.advancedEnabled) {
-    result = await applyAdvancedOverrides(tabId, resolved.profile);
+    result = await applyAdvancedOverrides(tabId, resolved.profile, isCurrent);
   } else {
-    await clearAdvancedOverrides(tabId);
+    await clearAdvancedOverrides(tabId, isCurrent);
     result = { attempted: false, applied: false };
   }
-  return tabRevision === currentTabOverrideRevision(tabId) ? result : null;
+  return isCurrent() ? result : null;
 }
 
 async function refreshTabForNavigation(tabId: number, url: string, tabRevision: number): Promise<void> {
+  const isCurrent = () => tabRevision === currentTabOverrideRevision(tabId);
   const supported = isAccessiblePageUrl(url, await pageSchemeAccessAllowed(url));
-  if (tabRevision !== currentTabOverrideRevision(tabId)) {
+  if (!isCurrent()) {
     return;
   }
-  await clearTabHeaderRule(tabId);
+  await clearTabHeaderRule(tabId, isCurrent);
   if (__GHOST_BUILD__ === "advanced") {
-    await clearAdvancedOverrides(tabId);
+    await clearAdvancedOverrides(tabId, isCurrent);
   }
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
@@ -306,16 +316,28 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
   }
 
   const settings = await readAppliedSettings();
+  const revision = settingsRevision;
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
   const resolved = resolveProfile(url, settings, __GHOST_BUILD__);
-  await refreshTabHeaderRule(tabId, resolved, settings);
+  await refreshTabHeaderRule(tabId, resolved, settings, () => (
+    revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
+  ));
+  if (revision !== settingsRevision) {
+    return;
+  }
   await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
 }
 
 async function getPopupState(url: string): Promise<PopupState> {
-  const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
+  // Only the global commit gates a control-panel read. Waiting for initial
+  // registration avoids a race with the fresh popup's bootstrap repair;
+  // debugger targets and content-script responses are not part of this queue.
+  const settings = await readAppliedSettings();
+  if (settings.temporaryDisabledUntil !== null && settings.temporaryDisabledUntil <= Date.now()) {
+    runBackgroundTask(refreshExpiredTemporaryDisable(settings));
+  }
   const earlyBootstrapAvailable = await isSynchronousContentBootstrapAvailable();
   const protocolSupported = isSupportedPageUrl(url);
   const fileAccessRequired = protocolSupported && url.startsWith("file:") && !await pageSchemeAccessAllowed(url);
@@ -407,8 +429,14 @@ function enqueueSettingsApplication<T>(operation: () => Promise<T>): Promise<T> 
 }
 
 async function readAppliedSettings(): Promise<GhostSettings> {
-  await settingsApplicationQueue;
-  return readSettings();
+  while (true) {
+    const pending = settingsApplicationQueue;
+    await pending;
+    const settings = await readSettings();
+    if (pending === settingsApplicationQueue) {
+      return settings;
+    }
+  }
 }
 
 async function refreshExpiredTemporaryDisable(settings: GhostSettings): Promise<GhostSettings> {
@@ -435,14 +463,14 @@ async function refreshAfterSettingsChange(settings: GhostSettings): Promise<void
 }
 
 async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refreshRevision: number): Promise<void> {
+  // Only extension-global protection belongs to the settings transaction.
+  // Never await debugger targets or content-script responses here: both can
+  // outlive the UI and block every subsequent save/startup read indefinitely.
   const steps: Array<() => Promise<void>> = [
     () => scheduleTemporaryDisableAlarm(settings),
     () => scheduleAutomaticLocationAlarm(settings),
     () => refreshContentBootstrap(settings, __GHOST_BUILD__),
-    () => clearTabHeaderRules(),
     () => refreshHeaderRules(settings),
-    () => refreshKnownTabOverrides(settings),
-    () => refreshOpenPageProfiles(),
     () => updateActionIcon(settings)
   ];
   const errors: unknown[] = [];
@@ -458,6 +486,12 @@ async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refr
   }
   if (errors.length > 0) {
     throw new AggregateError(errors, "One or more Ghost runtime refreshes failed.");
+  }
+  if (refreshRevision === settingsRefreshRevision) {
+    // Independent fan-outs: page profile updates must not wait for CDP, and
+    // a stuck tab from one revision must not gate dispatch of the next one.
+    runBackgroundTask(refreshOpenPageProfiles(refreshRevision));
+    runBackgroundTask(refreshKnownTabOverrides(settings, refreshRevision));
   }
 }
 
@@ -491,8 +525,7 @@ async function scheduleAutomaticLocationAlarm(settings: GhostSettings): Promise<
 
 async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettings> {
   // Network I/O is deliberately kept outside settingsApplicationQueue. That
-  // queue also performs debugger/header work and can legitimately take time
-  // when many tabs are open.
+  // queue covers commits/global protection, not tab fan-outs or network I/O.
   const settings = await readSettings();
   if (!settings.automaticLocationEnabled) {
     return settings;
@@ -530,7 +563,11 @@ async function applyAutomaticLocationNow(location: NonNullable<GhostSettings["au
     // Persisting the detected result completes the refresh request. Reapplying
     // it to every open tab continues in the background instead of blocking all
     // runtime messages and the options page.
-    runBackgroundTask(refreshAfterSettingsChange(settings));
+    runBackgroundTask(enqueueSettingsApplication(async () => {
+      // A UI commit may already be queued. Read its latest stored result here
+      // rather than replaying an older location-refresh snapshot over it.
+      await refreshAfterSettingsChange(await readSettings());
+    }));
   }
   return settings;
 }
@@ -561,34 +598,43 @@ async function applyDetectedHeliumFlags(detection: HeliumFlagDetection): Promise
   });
 }
 
-async function refreshKnownTabOverrides(settings: GhostSettings): Promise<void> {
+async function refreshKnownTabOverrides(settings: GhostSettings, refreshRevision: number): Promise<void> {
   if (!chrome.tabs?.query) {
     return;
   }
   const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URL_PATTERNS }).catch(() => []);
   await Promise.all(tabs.map(async (tab) => {
+    if (refreshRevision !== settingsRefreshRevision) {
+      return;
+    }
     if (typeof tab.id !== "number" || typeof tab.url !== "string" || !isSupportedPageUrl(tab.url) || !await pageSchemeAccessAllowed(tab.url)) {
       return;
     }
     const tabId = tab.id;
     const tabRevision = nextTabOverrideRevision(tabId);
+    const isCurrent = () => (
+      refreshRevision === settingsRefreshRevision && tabRevision === currentTabOverrideRevision(tabId)
+    );
     const resolved = resolveProfile(tab.url, settings, __GHOST_BUILD__);
-    if (tabRevision !== currentTabOverrideRevision(tabId)) {
+    if (!isCurrent()) {
       return;
     }
-    await refreshTabHeaderRule(tabId, resolved, settings);
+    await refreshTabHeaderRule(tabId, resolved, settings, isCurrent);
+    if (!isCurrent()) {
+      return;
+    }
     await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
   }));
 }
 
-async function refreshOpenPageProfiles(): Promise<void> {
+async function refreshOpenPageProfiles(refreshRevision: number): Promise<void> {
   if (!chrome.tabs?.query || !chrome.tabs?.sendMessage) {
     return;
   }
 
   const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URL_PATTERNS }).catch(() => []);
   await Promise.all(tabs.map(async (tab) => {
-    if (typeof tab.id !== "number") {
+    if (refreshRevision !== settingsRefreshRevision || typeof tab.id !== "number") {
       return;
     }
     await chrome.tabs.sendMessage(tab.id, {

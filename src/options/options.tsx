@@ -57,7 +57,7 @@ import {
   sameHeliumSurfaces,
   type HeliumFlagDetection
 } from "../shared/helium-detect";
-import { openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
+import { isSynchronousContentBootstrapAvailable, openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
@@ -352,14 +352,17 @@ function OptionsApp(): React.ReactElement {
       setSettings(normalized);
       setSavedSettings(normalized);
       setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
-      setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
+      // The background reply already includes successful global registration.
+      // Do not re-register an older payload from this UI or hold the save
+      // spinner for another registration round-trip.
+      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable);
       flashToast(t("saved"), "success");
     } catch (error) {
       flashToast(errorText(error), "error");
     } finally {
       setSaving(false);
     }
-  }, [flashToast, isAdvancedBuild, saving, settings]);
+  }, [flashToast, saving, settings]);
 
   const discard = React.useCallback(() => {
     if (savedSettings) {
@@ -374,12 +377,12 @@ function OptionsApp(): React.ReactElement {
       setSettings(normalized);
       setSavedSettings(normalized);
       setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
-      setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(normalized, isAdvancedBuild));
+      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable);
       flashToast(t("resetDone"), "success");
     } catch (error) {
       flashToast(errorText(error), "error");
     }
-  }, [flashToast, isAdvancedBuild]);
+  }, [flashToast]);
 
   const refreshAutomaticLocation = React.useCallback(async () => {
     if (!settings?.automaticLocationEnabled || !automaticLocationSavedEnabled || automaticLocationRefreshing) {

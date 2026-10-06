@@ -20,6 +20,14 @@ npm run verify
 
 Load `dist/lite` or `dist/advanced` as an unpacked extension in Chromium/Helium.
 
+## Saving and startup
+
+A successful save means settings have been stored and extension-global protection (the early page bootstrap and persistent request-header rules) has been applied. Updating already-open tabs is dispatched separately: a slow CDP target or nonresponding content-script message does not hold the save reply or popup loading. A global application failure still rejects the save and restores the previous settings/runtime configuration.
+
+Tab updates retain ordering and skip obsolete queued revisions. Page profile replies do not wait for CDP and do not claim that a pending Advanced override has completed. Existing tabs can finish applying after the save acknowledgement; a permanently unresponsive target can still delay its own CDP work, but not the control panel or other settings commits.
+
+Each new service-worker instance reconciles persisted global configuration, including ordinary wake-ups without an `onStartup` event. The popup/options initial load waits only for this global transaction, not all tabs. This prevents a fresh UI context from racing the worker's initial user-script registration. Saving no longer re-registers a second, potentially outdated bootstrap payload from the options UI.
+
 ## Helium compatibility
 
 Ghost leaves AudioContext fingerprint protection and `navigator.hardwareConcurrency` entirely to Helium. Extensions cannot read `helium://flags` directly, and Helium deliberately identifies itself as Google Chrome, so Ghost does not try to detect the browser. Instead, the **Browser environment** card in the Helium compatibility settings probes the observable effects of each flag from Ghost's own pages: the fixed vendor/renderer pairs returned by `spoof-webgl-info`, empty `navigator.userAgentData` brands from `remove-client-hints`, empty high-entropy client hints from `reduced-system-info`, and per-document `measureText` scaling from `fingerprinting-canvas-measuretext-noise`. With **Set these switches from detected flags** enabled (the default for fresh installs), Ghost re-checks at startup and whenever its popup or options page opens, and hands a surface to Helium only while that flag's effect is observed. Turn it off to manage the switches by hand:

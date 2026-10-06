@@ -74,7 +74,10 @@ async function buildTarget(target) {
     scriptBundles.push(
       bundleEsm("src/test-api.ts", "test-api.js", testOutdir, define),
       bundleEsm("src/dnr-test-api.ts", "dnr-test-api.js", testOutdir, define),
-      bundleEsm("src/advanced-test-api.ts", "advanced-test-api.js", testOutdir, define)
+      bundleEsm("src/advanced-test-api.ts", "advanced-test-api.js", testOutdir, define),
+      bundleIife("src/background/index.ts", "background-advanced.js", testOutdir, {
+        ...define, __GHOST_BUILD__: JSON.stringify("advanced")
+      })
     );
   }
   await Promise.all(scriptBundles);
