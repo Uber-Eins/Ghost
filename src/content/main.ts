@@ -1,6 +1,7 @@
 import { stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
 import { constructDateWithNewTarget } from "../shared/date-constructor";
+import { strictModeForBlobParts } from "../shared/worker-blob";
 import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
@@ -1355,7 +1356,7 @@ function nativeMappingGetter(nativeGetter: () => unknown, map: (nativeValue: unk
 // Dedicated workers get their own WebGL and WebGPU globals that the page
 // patches cannot reach. Blob workers (the shape fingerprinting libraries use
 // for inline probes) are re-created from a wrapper blob that installs the same
-// identity before loading the original script. Same-origin URL workers are
+// identity and the original bytes in one entry script. Same-origin URL workers are
 // left alone: rewriting them to blob: would break relative importScripts,
 // self.location, and any CSP that forbids blob workers.
 function patchWorkers(): void {
@@ -1372,10 +1373,40 @@ function patchWorkers(): void {
     Reflect.apply(nativeRevokeObjectURL, URL, [url]);
   };
 
-  // Remember which Blob backs each object URL the page creates. Opaque
-  // origins (file://, sandboxed frames) cannot re-fetch their own blob: URLs
-  // from inside another worker, so those workers are rebuilt from the Blob
-  // itself instead of being loaded through importScripts.
+  // Preserve classic scripts' directive mode when prefixing the identity
+  // setup. Blob bytes cannot be read synchronously here, so capture only what
+  // is safely known from string parts at construction, after native validation.
+  const blobModes = new WeakMap<Blob, boolean>();
+  const WrappedBlob = maskAsNative(new Proxy(NativeBlob, {
+    construct(target, argumentsList, newTarget) {
+      const blob = Reflect.construct(target, argumentsList, newTarget) as Blob;
+      const strict = strictModeForBlobParts(argumentsList[0]);
+      if (strict !== null) {
+        blobModes.set(blob, strict);
+      }
+      return blob;
+    }
+  }), NativeBlob);
+  const blobConstructorDescriptor = Object.getOwnPropertyDescriptor(NativeBlob.prototype, "constructor");
+  const globalBlobDescriptor = Object.getOwnPropertyDescriptor(window, "Blob");
+  try {
+    if (blobConstructorDescriptor && globalBlobDescriptor) {
+      Object.defineProperty(NativeBlob.prototype, "constructor", { ...blobConstructorDescriptor, value: WrappedBlob });
+      Object.defineProperty(window, "Blob", { ...globalBlobDescriptor, value: WrappedBlob });
+    }
+  } catch {
+    // Restore both descriptors if this realm does not permit observation.
+    if (blobConstructorDescriptor) {
+      try { Object.defineProperty(NativeBlob.prototype, "constructor", blobConstructorDescriptor); } catch {}
+    }
+    if (globalBlobDescriptor) {
+      try { Object.defineProperty(window, "Blob", globalBlobDescriptor); } catch {}
+    }
+  }
+
+  // Remember the original Blob, not just its URL. A CSP can allow blob: in
+  // worker-src but forbid it in script-src: an importScripts/dynamic-import
+  // loader then fails asynchronously, outside the Worker's constructor catch.
   const blobRegistry = new Map<string, Blob>();
   try {
     Object.defineProperty(URL, "createObjectURL", {
@@ -1403,33 +1434,25 @@ function patchWorkers(): void {
       }), nativeRevokeObjectURL)
     });
   } catch {
-    // Without the registry, opaque-origin blob workers simply stay native.
+    // Without the registry, blob workers simply stay native.
   }
 
-  const wrapBlobWorker = (scriptURL: string, options?: WorkerOptions): string | null => {
+  const wrapBlobWorker = (scriptURL: string): string | null => {
     if (!state.enabled || !state.webglInfoSpoofingEnabled || !/^blob:/i.test(scriptURL)) {
       return null;
     }
     try {
-      const prelude = workerIdentityPrelude(state.profile);
       const original = blobRegistry.get(scriptURL);
-      // file:// documents still report location.origin as "file://", but the
-      // blob URLs they mint are "blob:null/…" and cannot be re-fetched from a
-      // worker, so the URL itself is the reliable opaque-origin signal.
-      if (/^blob:null\//i.test(scriptURL)) {
-        if (!original) {
-          return null;
-        }
-        return createObjectURL(new NativeBlob([`${prelude}\n`, original], { type: original.type || "text/javascript" }));
+      const strict = original ? blobModes.get(original) : undefined;
+      if (!original || strict === undefined) {
+        return null;
       }
-      // Load the original as its own script so its directive prologue and
-      // error reporting stay intact. A static import would evaluate a module
-      // before this prelude, so module workers import dynamically and
-      // re-throw failures asynchronously to keep the worker's error event.
-      const loader = options?.type === "module"
-        ? `import(${JSON.stringify(scriptURL)}).catch(function(error){setTimeout(function(){throw error;});});`
-        : `importScripts(${JSON.stringify(scriptURL)});`;
-      return createObjectURL(new NativeBlob([`${prelude}\n${loader}`], { type: "text/javascript" }));
+      const prelude = workerIdentityPrelude(state.profile);
+      return createObjectURL(new NativeBlob([
+        strict ? '"use strict";\n' : "",
+        `${prelude}\n`,
+        original
+      ], { type: original.type || "text/javascript" }));
     } catch {
       return null;
     }
@@ -1438,7 +1461,7 @@ function patchWorkers(): void {
   const WrappedWorker = maskAsNative(new Proxy(NativeWorker, {
     construct(target, argumentsList, newTarget) {
       const [scriptURL, options] = argumentsList as [string | URL, WorkerOptions | undefined];
-      const wrappedURL = wrapBlobWorker(String(scriptURL), options);
+      const wrappedURL = wrapBlobWorker(String(scriptURL));
       if (wrappedURL) {
         try {
           return Reflect.construct(target, [wrappedURL, options], newTarget);

@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+  content="script-src 'nonce-ghost-worker-test' 'unsafe-eval' https://challenges.cloudflare.com; worker-src blob:; connect-src 'none'">
+<title>Ghost Worker CSP regression</title>
+<h1>Ghost Worker CSP regression</h1>
+<p>This page permits Blob Worker entry scripts but forbids Blob script imports.
+It directly loads Ghost's Lite page bundle; no extension or CDP overrides are required.</p>
+<pre id="output">pending</pre>
+<script nonce="ghost-worker-test">
+  const workerBody = `
+    const canvas = new OffscreenCanvas(4, 4);
+    const gl = canvas.getContext("webgl");
+    const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
+    self.postMessage({
+      ready: true,
+      strict: (function () { return this === undefined; })(),
+      vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : null,
+      renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null
+    });
+    self.onmessage = event => self.postMessage({ echo: event.data });
+  `;
+  const NativeWorker = Worker;
+  const blobShape = Constructor => ({
+    name: Constructor.name,
+    length: Constructor.length,
+    keys: Reflect.ownKeys(Constructor).map(String),
+    constructorMatches: new Constructor().constructor === Constructor
+  });
+  const nativeBlobShape = blobShape(Blob);
+  const nativePageApis = { Date, DateTimeFormat: Intl.DateTimeFormat };
+  const originalCreateObjectURL = URL.createObjectURL.bind(URL);
+  const untrackedUrl = originalCreateObjectURL(new Blob([workerBody], { type: "text/javascript" }));
+  function probe(Constructor, url, options) {
+    return new Promise(resolve => {
+      let worker;
+      let initial;
+      const timer = setTimeout(() => finish({ error: "timeout" }), 3000);
+      function finish(value) {
+        clearTimeout(timer);
+        if (worker) worker.terminate();
+        resolve(value);
+      }
+      try {
+        worker = new Constructor(url, options);
+        worker.onerror = event => {
+          event.preventDefault();
+          finish({ error: event.message || "worker error" });
+        };
+        worker.onmessage = event => {
+          if (event.data.ready) {
+            initial = event.data;
+            worker.postMessage("round-trip");
+          } else {
+            finish({ ...initial, echo: event.data.echo });
+          }
+        };
+      } catch (error) {
+        finish({ error: error.message });
+      }
+    });
+  }
+  const before = probe(NativeWorker, untrackedUrl);
+  window.__GHOST_BOOTSTRAP_SETTINGS__ = {
+    build: "lite",
+    settings: {
+      enabled: true, advancedEnabled: false, heliumFlagSync: false,
+      siteProfiles: { "*": "tokyo-ja-jp" },
+      excludedDomains: [], excludedDefaultsVersion: 1
+    }
+  };
+</script>
+<script nonce="ghost-worker-test" src="../dist/lite/page-main.js"></script>
+<script nonce="ghost-worker-test">
+  window.regressionDone = (async () => {
+    const urls = [];
+    const makeUrl = source => {
+      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      urls.push(url);
+      return url;
+    };
+    const baseline = await before;
+    const classic = await probe(Worker, makeUrl(workerBody));
+    const strict = await probe(Worker, makeUrl(`"use strict";\n${workerBody}`));
+    const module = await probe(Worker, makeUrl(workerBody), { type: "module" });
+    const untracked = await probe(Worker, untrackedUrl);
+    // Unknown byte/ASI sources must remain functional via the native path.
+    const binaryUrl = makeUrl(new TextEncoder().encode(workerBody));
+    const binary = await probe(Worker, binaryUrl);
+    const asiStrict = await probe(Worker, makeUrl(`"use strict"\n${workerBody}`));
+    class DerivedBlob extends Blob {}
+    const derivedBlob = new DerivedBlob(["hello"]);
+    const blobBytes = await new Blob(["a", new Uint8Array([98]), new Blob(["c"])]).text();
+    for (const url of [...urls, untrackedUrl]) URL.revokeObjectURL(url);
+    const checks = {
+      nativeWorkerReady: baseline.ready === true && baseline.echo === "round-trip",
+      classicWorkerReady: classic.ready === true && classic.echo === "round-trip",
+      strictWorkerReady: strict.ready === true && strict.echo === "round-trip",
+      moduleWorkerReady: module.ready === true && module.echo === "round-trip",
+      untrackedWorkerReady: untracked.ready === true && untracked.echo === "round-trip",
+      binaryWorkerReady: binary.ready === true && binary.echo === "round-trip",
+      asiStrictWorkerReady: asiStrict.ready === true && asiStrict.echo === "round-trip" && asiStrict.strict === true,
+      sloppyModePreserved: classic.strict === false,
+      strictModePreserved: strict.strict === true,
+      moduleStrictModePreserved: module.strict === true,
+      pageProtectionActive: navigator.language === "ja-JP"
+        && Intl.DateTimeFormat().resolvedOptions().timeZone === "Asia/Tokyo",
+      blobShapePreserved: JSON.stringify(blobShape(Blob)) === JSON.stringify(nativeBlobShape),
+      blobBytesPreserved: blobBytes === "abc",
+      blobSubclassPreserved: derivedBlob instanceof DerivedBlob
+        && derivedBlob.constructor === DerivedBlob && await derivedBlob.text() === "hello",
+      dateAndIntlStillProtected: Date !== nativePageApis.Date
+        && Intl.DateTimeFormat !== nativePageApis.DateTimeFormat
+    };
+    if (classic.vendor !== null && classic.ready) {
+      checks.workerVendorProtected = classic.vendor === "Google Inc. (Intel)";
+      checks.workerRendererProtected = classic.renderer === "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)";
+    }
+    const result = { passed: Object.values(checks).every(Boolean), checks,
+      baseline, classic, strict, module, untracked, binary, asiStrict };
+    document.getElementById("output").textContent = JSON.stringify(result, null, 2);
+    document.title = `${result.passed ? "PASS" : "FAIL"}: Ghost Worker CSP regression`;
+    return result;
+  })();
+</script>

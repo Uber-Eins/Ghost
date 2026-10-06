@@ -1,5 +1,6 @@
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
 export { constructDateWithNewTarget } from "./shared/date-constructor";
+export { strictModeForBlobParts } from "./shared/worker-blob";
 export { repairContentBootstrap } from "./background/bootstrap";
 export { fnv1a, stableSeed } from "./shared/hash";
 export {

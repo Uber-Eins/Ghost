@@ -26,6 +26,7 @@ import {
   SUPPORTED_TIMEZONES,
   canvasFontHasBlockedFamily,
   constructDateWithNewTarget,
+  strictModeForBlobParts,
   dateFromZonedLocalParts,
   exclusionAppliesToSiteKey,
   exclusionsForSiteToggle,
@@ -1144,7 +1145,31 @@ test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () 
   assert.doesNotMatch(pageMain, /\breadPixels\b/);
   assert.match(pageMain, /parameter === (?:0x9245|37445)/i);
   assert.match(pageMain, /GPUAdapterInfo/);
-  assert.match(pageMain, /importScripts\(/);
+  assert.doesNotMatch(pageMain, /importScripts\(/);
+});
+
+test("Blob worker composition preserves known directive modes without reading user getters", () => {
+  assert.equal(strictModeForBlobParts(undefined), false);
+  assert.equal(strictModeForBlobParts([]), false);
+  assert.equal(strictModeForBlobParts(["self.postMessage(1);"]), false);
+  assert.equal(strictModeForBlobParts(['"use ', 'strict";\nself.postMessage(1);']), true);
+  assert.equal(strictModeForBlobParts([" /* comment */ // another\n'use strict'; self.postMessage(1);"]), true);
+  assert.equal(strictModeForBlobParts(['"other"; /* comment */ "use strict"; self.postMessage(1);']), true);
+  assert.equal(strictModeForBlobParts(['"use\\x20strict"; self.postMessage(1);']), false);
+  assert.equal(strictModeForBlobParts(['"use strict"']), true);
+  assert.equal(strictModeForBlobParts(['"use strict"\n(function(){})()']), null);
+  assert.equal(strictModeForBlobParts(['"use strict" /* comment */;']), null);
+  assert.equal(strictModeForBlobParts(["#!/usr/bin/env node\nself.postMessage(1);"]), null);
+  assert.equal(strictModeForBlobParts([new Uint8Array([1, 2])]), null);
+  assert.equal(strictModeForBlobParts(["/", new Uint8Array([1, 2])]), null);
+  let accesses = 0;
+  const parts = [];
+  Object.defineProperty(parts, "0", { get() { accesses += 1; return '"use strict";'; } });
+  assert.equal(strictModeForBlobParts(parts), null);
+  assert.equal(accesses, 0);
+  const iterable = { *[Symbol.iterator]() { accesses += 1; yield "self.postMessage(1);"; } };
+  assert.equal(strictModeForBlobParts(iterable), null);
+  assert.equal(accesses, 0);
 });
 
 test("client hints platform version never describes an impossible OS", () => {
