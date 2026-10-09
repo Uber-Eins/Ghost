@@ -211,9 +211,7 @@ function install(): void {
   patchDate();
   patchGeolocation();
   patchFontFaceSet();
-  if (installedSurfaceOwnership.canvasMeasureText) {
-    patchCanvas();
-  }
+  patchCanvas();
   if (installedSurfaceOwnership.webglInfo) {
     patchWebGL();
     patchWebGPU();
@@ -1218,12 +1216,16 @@ function patchCanvas(): void {
     Object.defineProperty(contextPrototype, "measureText", {
       configurable: true,
       value: function measureText(this: CanvasRenderingContext2D, text: string) {
-        if (!state.canvasMeasureTextSpoofingEnabled) {
+        if (!state.enabled) {
           return nativeMeasureText.call(this, text);
         }
         const font = this.font;
         const sanitizedFont = sanitizeCanvasFont(font, state.profile, currentDocumentFontFamilies());
         const metrics = sanitizedFont === font ? nativeMeasureText.call(this, text) : measureTextWithFont(this, nativeMeasureText, text, sanitizedFont);
+        if (!state.canvasMeasureTextSpoofingEnabled) {
+          // Helium owns measureText noise in this mode; Ghost must not add its own Proxy noise.
+          return metrics;
+        }
         return new Proxy(metrics, {
           get(target, property) {
             const value = Reflect.get(target, property, target);
