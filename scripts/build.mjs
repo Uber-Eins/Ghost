@@ -17,6 +17,19 @@ if (includeTestApis) {
   await mkdir(testOutdir, { recursive: true });
 }
 
+// Date/Intl rewriting for worker globals, embedded as source text in the
+// worker identity prelude.
+const workerTimePatch = (await esbuildBuild({
+  entryPoints: [path.join(root, "src/worker/time-patch.ts")],
+  bundle: true,
+  format: "iife",
+  platform: "browser",
+  target: "chrome120",
+  minify: true,
+  write: false,
+  logLevel: "warning"
+})).outputFiles[0].text.trim();
+
 for (const target of targets) {
   await buildTarget(target);
 }
@@ -41,7 +54,8 @@ async function buildTarget(target) {
 
   const define = {
     __GHOST_BUILD__: JSON.stringify(target),
-    __GHOST_CHANNEL__: JSON.stringify(channel)
+    __GHOST_CHANNEL__: JSON.stringify(channel),
+    __GHOST_WORKER_TIME_PATCH__: JSON.stringify(workerTimePatch)
   };
 
   await esbuildBuild({

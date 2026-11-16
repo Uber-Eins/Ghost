@@ -1,6 +1,8 @@
 import { appVersionForProfile, navigatorPlatformForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "./profiles";
 import type { Profile } from "./types";
 
+declare const __GHOST_WORKER_TIME_PATCH__: string;
+
 export interface WorkerIdentityOptions {
   profile: Profile;
   /** The browser's real User-Agent, used to derive the Chromium version. */
@@ -19,6 +21,8 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
   // Values are resolved here so the worker reports exactly what the page's
   // navigator getters report, without shipping the profile logic into it.
   const identity = {
+    intlLocale: profile.intlLocale,
+    timezoneId: profile.timezoneId,
     language: profile.locale,
     languages: profile.languages,
     deviceMemory: profile.deviceMemory,
@@ -39,6 +43,8 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
     "function mask(wrapper,native){sources.set(wrapper,native);return wrapper;}",
     "try{Object.defineProperty(Function.prototype,\"toString\",{configurable:true,writable:true,value:mask(function toString(){var native=sources.get(this);return nativeToString.call(native||this);},nativeToString)});}catch(error){}",
     workerNavigatorPrelude(identity),
+    // Same Date/Intl rewriting as the page; reads `identity` and `mask` above.
+    `try{${__GHOST_WORKER_TIME_PATCH__}}catch(error){}`,
     options.webglInfoSpoofingEnabled ? workerWebGLPrelude(profile) : "",
     webgpu
       ? `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(function(){nativeGetter.call(this);return info[key];},nativeGetter)});}catch(error){}});}`

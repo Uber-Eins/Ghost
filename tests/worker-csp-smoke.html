@@ -28,6 +28,19 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
         appVersion: navigator.appVersion,
         userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null,
         getterSource: Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), "userAgent").get.toString()
+      },
+      time: {
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        locale: Intl.DateTimeFormat().resolvedOptions().locale,
+        numberLocale: Intl.NumberFormat().resolvedOptions().locale,
+        offset: new Date(1700000000000).getTimezoneOffset(),
+        string: new Date(1700000000000).toString(),
+        localeString: new Date(1700000000000).toLocaleString(),
+        hours: new Date(1700000000000).getHours(),
+        constructed: new Date(2024, 0, 15, 12).getTime(),
+        dateSource: Date.toString(),
+        offsetSource: Date.prototype.getTimezoneOffset.toString(),
+        isDate: new Date() instanceof Date && typeof Date() === "string"
       }
     });
     self.onmessage = event => self.postMessage({ echo: event.data });
@@ -139,6 +152,23 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
     for (const [name, result] of Object.entries({ classic, strict, module })) {
       checks[`${name}WorkerNavigatorMatchesPage`] = JSON.stringify(result.navigator) === pageNavigator();
     }
+    const pageTime = JSON.stringify({
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      locale: Intl.DateTimeFormat().resolvedOptions().locale,
+      numberLocale: Intl.NumberFormat().resolvedOptions().locale,
+      offset: new Date(1700000000000).getTimezoneOffset(),
+      string: new Date(1700000000000).toString(),
+      localeString: new Date(1700000000000).toLocaleString(),
+      hours: new Date(1700000000000).getHours(),
+      constructed: new Date(2024, 0, 15, 12).getTime(),
+      dateSource: "function Date() { [native code] }",
+      offsetSource: "function getTimezoneOffset() { [native code] }",
+      isDate: true
+    });
+    for (const [name, result] of Object.entries({ classic, strict, module })) {
+      checks[`${name}WorkerTimeMatchesPage`] = JSON.stringify(result.time) === pageTime;
+    }
+    checks.workerTimeZoneIsProfile = classic.time?.timeZone === "Asia/Tokyo" && classic.time?.offset === -540;
     checks.untrackedWorkerNavigatorNative = JSON.stringify(untracked.navigator) === JSON.stringify(baseline.navigator);
     if (classic.vendor !== null && classic.ready) {
       checks.workerVendorProtected = classic.vendor === "Google Inc. (Intel)";

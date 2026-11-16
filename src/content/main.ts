@@ -1,18 +1,11 @@
 import { stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
-import { constructDateWithNewTarget } from "../shared/date-constructor";
 import { strictModeForBlobParts } from "../shared/worker-blob";
 import { workerIdentityPrelude as buildWorkerIdentityPrelude } from "../shared/worker-prelude";
 import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
-import {
-  dateFromZonedLocalParts,
-  formatSpoofedTimeString,
-  getOffsetLabel,
-  getTimezoneOffsetMinutes,
-  getZonedParts
-} from "../shared/timezone";
+import { installTimePatches } from "../shared/time-patch";
 import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../shared/storage";
 import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
@@ -29,11 +22,6 @@ interface GhostState {
   siteKey: string;
   seed: string;
   profile: Profile;
-}
-
-interface IntlInstanceMetadata {
-  locale?: string;
-  timeZone?: string;
 }
 
 interface BootstrapPayload {
@@ -66,16 +54,6 @@ if (existingController) {
 }
 
 const NativeDate = Date;
-const NativeIntl = {
-  DateTimeFormat: Intl.DateTimeFormat,
-  NumberFormat: Intl.NumberFormat,
-  Collator: Intl.Collator,
-  PluralRules: Intl.PluralRules,
-  RelativeTimeFormat: Intl.RelativeTimeFormat,
-  ListFormat: Intl.ListFormat,
-  DisplayNames: Intl.DisplayNames,
-  Segmenter: Intl.Segmenter
-};
 const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "language",
   "languages",
@@ -121,7 +99,6 @@ const installedSurfaceOwnership = Object.freeze({
   webglInfo: state.webglInfoSpoofingEnabled
 });
 const initialProfileSignature = profileSignature(fallbackProfile);
-const intlInstanceMetadata = new WeakMap<object, IntlInstanceMetadata>();
 // Every replaced built-in is registered against the native it wraps so that
 // Function.prototype.toString keeps printing the original native source. A
 // wrapper whose toString exposes JavaScript is the cheapest tamper signal a
@@ -208,8 +185,12 @@ function install(): void {
   }
   patchNavigator();
   patchIframeNavigatorAccess();
-  patchIntl();
-  patchDate();
+  installTimePatches({
+    enabled: () => state.enabled,
+    intlLocale: () => state.profile.intlLocale,
+    timezoneId: () => state.profile.timezoneId,
+    maskAsNative
+  });
   patchGeolocation();
   patchFontFaceSet();
   patchCanvas();
@@ -816,293 +797,6 @@ function buildUserAgentData(): object | undefined {
   return value;
 }
 
-function patchIntl(): void {
-  patchIntlConstructor("DateTimeFormat", "timeZone");
-  patchIntlConstructor("NumberFormat");
-  patchIntlConstructor("Collator");
-  patchIntlConstructor("PluralRules");
-  patchIntlConstructor("RelativeTimeFormat");
-  patchIntlConstructor("ListFormat");
-  patchIntlConstructor("DisplayNames");
-  patchIntlConstructor("Segmenter");
-}
-
-function patchIntlConstructor(name: keyof typeof NativeIntl, timeZoneOption?: "timeZone"): void {
-  const NativeConstructor = NativeIntl[name] as unknown as new (...args: unknown[]) => object;
-  if (typeof NativeConstructor !== "function") {
-    return;
-  }
-
-  const Wrapped = function IntlWrapper(this: object, locales?: unknown, options?: Record<string, unknown>) {
-    const metadata: IntlInstanceMetadata = {};
-    const shouldDefaultLocale = state.enabled && locales === undefined;
-    const nextLocales = shouldDefaultLocale ? state.profile.intlLocale : locales;
-    const nextOptions = { ...(options ?? {}) };
-    if (state.enabled && timeZoneOption && nextOptions.timeZone === undefined) {
-      nextOptions.timeZone = state.profile.timezoneId;
-      metadata.timeZone = state.profile.timezoneId;
-    }
-    if (shouldDefaultLocale) {
-      metadata.locale = state.profile.intlLocale;
-    }
-    const instance = Reflect.construct(NativeConstructor, [nextLocales, nextOptions], new.target || NativeConstructor);
-    if (metadata.locale || metadata.timeZone) {
-      intlInstanceMetadata.set(instance, metadata);
-    }
-    return instance;
-  };
-
-  Object.setPrototypeOf(Wrapped, NativeConstructor);
-  Wrapped.prototype = NativeConstructor.prototype;
-  maskAsNative(Wrapped, NativeConstructor);
-
-  const nativeSupportedLocalesOf = (NativeConstructor as unknown as { supportedLocalesOf?: (...args: unknown[]) => unknown }).supportedLocalesOf;
-  if (nativeSupportedLocalesOf) {
-    Object.defineProperty(Wrapped, "supportedLocalesOf", {
-      configurable: true,
-      value: maskAsNative((...args: unknown[]) => nativeSupportedLocalesOf.apply(NativeConstructor, args), nativeSupportedLocalesOf)
-    });
-  }
-
-  const nativeResolvedOptions = (NativeConstructor.prototype as { resolvedOptions?: () => Record<string, unknown> }).resolvedOptions;
-  if (nativeResolvedOptions) {
-    Object.defineProperty(NativeConstructor.prototype, "resolvedOptions", {
-      configurable: true,
-      value: maskAsNative(function resolvedOptions(this: object) {
-        const result = nativeResolvedOptions.call(this);
-        const metadata = intlInstanceMetadata.get(this);
-        if (state.enabled && metadata?.locale) {
-          result.locale = metadata.locale;
-        }
-        if (state.enabled && timeZoneOption && metadata?.timeZone) {
-          result.timeZone = metadata.timeZone;
-        }
-        return result;
-      }, nativeResolvedOptions)
-    });
-  }
-
-  Object.defineProperty(Intl, name, {
-    configurable: true,
-    writable: true,
-    value: Wrapped
-  });
-}
-
-function patchDate(): void {
-  const nativeGetTime = NativeDate.prototype.getTime;
-  const nativeGetTimezoneOffset = NativeDate.prototype.getTimezoneOffset;
-  const nativeToString = NativeDate.prototype.toString;
-  const nativeToDateString = NativeDate.prototype.toDateString;
-  const nativeToTimeString = NativeDate.prototype.toTimeString;
-  const nativeToLocaleString = NativeDate.prototype.toLocaleString;
-  const nativeToLocaleDateString = NativeDate.prototype.toLocaleDateString;
-  const nativeToLocaleTimeString = NativeDate.prototype.toLocaleTimeString;
-  const nativeGetYear = (NativeDate.prototype as Date & { getYear?: (this: Date) => number }).getYear;
-  const nativeGetters = {
-    getFullYear: NativeDate.prototype.getFullYear,
-    getMonth: NativeDate.prototype.getMonth,
-    getDate: NativeDate.prototype.getDate,
-    getDay: NativeDate.prototype.getDay,
-    getHours: NativeDate.prototype.getHours,
-    getMinutes: NativeDate.prototype.getMinutes,
-    getSeconds: NativeDate.prototype.getSeconds,
-    getMilliseconds: NativeDate.prototype.getMilliseconds
-  };
-
-  function dateFromThis(value: Date): Date {
-    return new NativeDate(nativeGetTime.call(value));
-  }
-
-  Object.defineProperties(NativeDate.prototype, {
-    getTimezoneOffset: {
-      configurable: true,
-      value: function getTimezoneOffset(this: Date) {
-        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-          return nativeGetTimezoneOffset.call(this);
-        }
-        return getTimezoneOffsetMinutes(dateFromThis(this), state.profile.timezoneId, NativeIntl.DateTimeFormat);
-      }
-    },
-    getYear: {
-      configurable: true,
-      value: function getYear(this: Date) {
-        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-          return typeof nativeGetYear === "function"
-            ? nativeGetYear.call(this)
-            : nativeGetters.getFullYear.call(this) - 1900;
-        }
-        return getZonedParts(dateFromThis(this), state.profile.timezoneId, "en-US", NativeIntl.DateTimeFormat).year - 1900;
-      }
-    },
-    getFullYear: { configurable: true, value: zonedGetter("year", nativeGetters.getFullYear) },
-    getMonth: { configurable: true, value: zonedGetter("month", nativeGetters.getMonth, -1) },
-    getDate: { configurable: true, value: zonedGetter("day", nativeGetters.getDate) },
-    getDay: { configurable: true, value: zonedGetter("weekday", nativeGetters.getDay) },
-    getHours: { configurable: true, value: zonedGetter("hour", nativeGetters.getHours) },
-    getMinutes: { configurable: true, value: zonedGetter("minute", nativeGetters.getMinutes) },
-    getSeconds: { configurable: true, value: zonedGetter("second", nativeGetters.getSeconds) },
-    getMilliseconds: {
-      configurable: true,
-      value: function getMilliseconds(this: Date) {
-        return nativeGetters.getMilliseconds.call(this);
-      }
-    },
-    toString: {
-      configurable: true,
-      value: function toString(this: Date) {
-        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-          return nativeToString.call(this);
-        }
-        return formatDateTime(dateFromThis(this));
-      }
-    },
-    toDateString: {
-      configurable: true,
-      value: function toDateString(this: Date) {
-        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-          return nativeToDateString.call(this);
-        }
-        return formatDateOnly(dateFromThis(this));
-      }
-    },
-    toTimeString: {
-      configurable: true,
-      value: function toTimeString(this: Date) {
-        if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-          return nativeToTimeString.call(this);
-        }
-        return formatTimeOnly(dateFromThis(this));
-      }
-    },
-    toLocaleString: {
-      configurable: true,
-      value: function toLocaleString(this: Date, locales?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
-        if (!state.enabled) {
-          return nativeToLocaleString.call(this, locales, options);
-        }
-        return nativeToLocaleString.call(this, locales ?? state.profile.intlLocale, withTimeZone(options));
-      }
-    },
-    toLocaleDateString: {
-      configurable: true,
-      value: function toLocaleDateString(this: Date, locales?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
-        if (!state.enabled) {
-          return nativeToLocaleDateString.call(this, locales, options);
-        }
-        return nativeToLocaleDateString.call(this, locales ?? state.profile.intlLocale, withTimeZone(options));
-      }
-    },
-    toLocaleTimeString: {
-      configurable: true,
-      value: function toLocaleTimeString(this: Date, locales?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
-        if (!state.enabled) {
-          return nativeToLocaleTimeString.call(this, locales, options);
-        }
-        return nativeToLocaleTimeString.call(this, locales ?? state.profile.intlLocale, withTimeZone(options));
-      }
-    }
-  });
-
-  const nativeDateMethods: Record<string, unknown> = {
-    ...nativeGetters,
-    getTimezoneOffset: nativeGetTimezoneOffset,
-    getYear: nativeGetYear,
-    toString: nativeToString,
-    toDateString: nativeToDateString,
-    toTimeString: nativeToTimeString,
-    toLocaleString: nativeToLocaleString,
-    toLocaleDateString: nativeToLocaleDateString,
-    toLocaleTimeString: nativeToLocaleTimeString
-  };
-  for (const [name, native] of Object.entries(nativeDateMethods)) {
-    maskAsNative((NativeDate.prototype as unknown as Record<string, unknown>)[name], native);
-  }
-
-  function GhostDate(this: Date, ...args: unknown[]): string | Date {
-    if (!new.target) {
-      return new NativeDate().toString();
-    }
-    return constructDate(args, new.target);
-  }
-  Object.setPrototypeOf(GhostDate, NativeDate);
-  GhostDate.prototype = NativeDate.prototype;
-  maskAsNative(GhostDate, NativeDate);
-  Object.defineProperties(GhostDate, {
-    now: { value: maskAsNative(NativeDate.now.bind(NativeDate), NativeDate.now) },
-    parse: { value: maskAsNative(NativeDate.parse.bind(NativeDate), NativeDate.parse) },
-    UTC: { value: maskAsNative(NativeDate.UTC.bind(NativeDate), NativeDate.UTC) }
-  });
-  Object.defineProperty(window, "Date", {
-    configurable: true,
-    writable: true,
-    value: GhostDate
-  });
-
-  function zonedGetter(key: keyof ReturnType<typeof getZonedParts>, nativeGetter: (this: Date) => number, adjustment = 0) {
-    return function getter(this: Date) {
-      if (!state.enabled || Number.isNaN(nativeGetTime.call(this))) {
-        return nativeGetter.call(this);
-      }
-      return getZonedParts(dateFromThis(this), state.profile.timezoneId, "en-US", NativeIntl.DateTimeFormat)[key] + adjustment;
-    };
-  }
-}
-
-function constructDate(args: unknown[], newTarget: Function): Date {
-  if (state.enabled && args.length >= 2) {
-    const date = dateFromZonedLocalParts(
-      state.profile.timezoneId,
-      Number(args[0]),
-      Number(args[1]),
-      args.length >= 3 ? Number(args[2]) : 1,
-      args.length >= 4 ? Number(args[3]) : 0,
-      args.length >= 5 ? Number(args[4]) : 0,
-      args.length >= 6 ? Number(args[5]) : 0,
-      args.length >= 7 ? Number(args[6]) : 0,
-      NativeIntl.DateTimeFormat
-    );
-    return constructDateWithNewTarget(NativeDate, [date.getTime()], newTarget);
-  }
-
-  return constructDateWithNewTarget(NativeDate, args, newTarget);
-}
-
-function withTimeZone(options?: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
-  return {
-    ...(options ?? {}),
-    timeZone: options?.timeZone ?? state.profile.timezoneId
-  };
-}
-
-function formatDateTime(date: Date): string {
-  return `${formatDateOnly(date)} ${formatTimeOnly(date)}`;
-}
-
-function formatDateOnly(date: Date): string {
-  const parts = getZonedParts(date, state.profile.timezoneId, "en-US", NativeIntl.DateTimeFormat);
-  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parts.weekday];
-  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][parts.month - 1];
-  return `${weekday} ${month} ${pad(parts.day)} ${parts.year}`;
-}
-
-function formatTimeOnly(date: Date): string {
-  const parts = getZonedParts(date, state.profile.timezoneId, "en-US", NativeIntl.DateTimeFormat);
-  const offset = getTimezoneOffsetMinutes(date, state.profile.timezoneId, NativeIntl.DateTimeFormat);
-  const name = timeZoneName(date);
-  return `${pad(parts.hour)}:${pad(parts.minute)}:${pad(parts.second)} ${getOffsetLabel(offset)} (${name})`;
-}
-
-function timeZoneName(date: Date): string {
-  const formatted = formatSpoofedTimeString(date, "en-US", state.profile.timezoneId, NativeIntl.DateTimeFormat);
-  const match = formatted.match(/\(([^)]+)\)$/);
-  if (match) {
-    return match[1];
-  }
-  const chunks = formatted.split(" ");
-  return chunks.slice(1).join(" ") || state.profile.timezoneId;
-}
-
 function patchGeolocation(): void {
   const watches = new Map<number, { nativeId?: number; timer?: number }>();
   let watchId = 1;
@@ -1523,10 +1217,6 @@ function defineMethod(target: object, property: string, value: unknown): void {
   } catch {
     // Some browser-owned prototypes reject redefinition; other surfaces remain patched.
   }
-}
-
-function pad(value: number): string {
-  return Math.trunc(value).toString().padStart(2, "0");
 }
 
 function quantizeMetric(value: number): string {
