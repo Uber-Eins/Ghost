@@ -8,7 +8,8 @@ import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetecti
 import type { HeliumFlagDetection } from "../shared/helium-detect";
 import { sameAutomaticLocation } from "../shared/automatic-location";
 import { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl, unsupportedPageLabel } from "../shared/internal";
-import { findProfile } from "../shared/profiles";
+import { findProfile, runtimeUserAgent } from "../shared/profiles";
+import { workerIdentityPrelude } from "../shared/worker-prelude";
 import { bestMatchingSiteRule, DEFAULT_SITE_RULE, exclusionsForSiteToggle, isExcludedUrl, normalizeSiteRuleKey, siteKeyFromUrl } from "../shared/site";
 import {
   DEFAULT_SETTINGS,
@@ -290,7 +291,13 @@ async function refreshAdvancedOverrideForTab(
   }
   let result: AdvancedResult;
   if (resolved.enabled && settings.advancedEnabled) {
-    result = await applyAdvancedOverrides(tabId, resolved.profile, isCurrent);
+    result = await applyAdvancedOverrides(tabId, resolved.profile, isCurrent, workerIdentityPrelude({
+      profile: resolved.profile,
+      baseUserAgent: runtimeUserAgent(),
+      globalPrivacyControlEnabled: resolved.globalPrivacyControlEnabled,
+      uaSpoofingEnabled: resolved.uaSpoofingEnabled,
+      webglInfoSpoofingEnabled: resolved.webglInfoSpoofingEnabled
+    }));
   } else {
     await clearAdvancedOverrides(tabId, isCurrent);
     result = { attempted: false, applied: false };

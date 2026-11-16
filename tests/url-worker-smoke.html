@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ghost URL Worker navigator check</title>
+<h1>Ghost URL Worker navigator check</h1>
+<p>Open this page over HTTP with the Advanced build installed and enabled. A
+dedicated worker loaded from a URL must report the same navigator as the page.</p>
+<pre id="output">pending</pre>
+<script>
+  window.regressionDone = (async () => {
+    const worker = new Worker("navigator-worker.js");
+    const fromWorker = await new Promise(resolve => {
+      worker.onmessage = event => resolve(event.data);
+      worker.onerror = event => resolve({ error: event.message || "worker error" });
+    });
+    worker.terminate();
+    const page = {
+      language: navigator.language,
+      languages: navigator.languages,
+      deviceMemory: navigator.deviceMemory,
+      globalPrivacyControl: navigator.globalPrivacyControl,
+      platform: navigator.platform,
+      userAgent: navigator.userAgent,
+      appVersion: navigator.appVersion,
+      userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null,
+      location: new URL("navigator-worker.js", location.href).href
+    };
+    const mismatched = Object.keys(page).filter(key => JSON.stringify(page[key]) !== JSON.stringify(fromWorker[key]));
+    const result = { passed: mismatched.length === 0, mismatched, page, worker: fromWorker };
+    document.getElementById("output").textContent = JSON.stringify(result, null, 2);
+    document.title = `${result.passed ? "PASS" : "FAIL"}: Ghost URL Worker navigator check`;
+    return result;
+  })();
+</script>

@@ -2,8 +2,17 @@ import type { Profile } from "../shared/types";
 
 const PROTOCOL_VERSION = "1.3";
 const OWNED_DEBUGGER_TABS_KEY = "ghost.advanced.ownedDebuggerTabs";
+const WORKER_PRELUDE_KEY_PREFIX = "ghost.advanced.workerPrelude.";
+// Dedicated workers start paused so their identity is installed before any
+// worker script runs. Only worker targets are auto-attached; frames are not.
+const WORKER_AUTO_ATTACH = {
+  autoAttach: true,
+  waitForDebuggerOnStart: true,
+  flatten: true,
+  filter: [{ type: "worker" }]
+};
 
-type Debuggee = chrome.debugger.Debuggee;
+type Debuggee = chrome.debugger.DebuggerSession;
 
 const debuggerOperationQueues = new Map<number, Promise<void>>();
 const ownedDebuggerTabs = new Set<number>();
@@ -13,12 +22,68 @@ let ownershipWriteQueue: Promise<void> = Promise.resolve();
 chrome.debugger?.onDetach?.addListener((source) => {
   const { tabId } = source;
   if (typeof tabId === "number") {
+    void forgetWorkerPrelude(tabId);
     void loadOwnedDebuggerTabs().then(() => {
       ownedDebuggerTabs.delete(tabId);
       return persistOwnedDebuggerTabs();
     });
   }
 });
+
+chrome.debugger?.onEvent?.addListener((source, method, params) => {
+  const { tabId } = source;
+  const attached = params as { sessionId?: string; targetInfo?: { type?: string } } | undefined;
+  if (method !== "Target.attachedToTarget" || typeof tabId !== "number" || !attached?.sessionId) {
+    return;
+  }
+  void prepareWorker({ tabId, sessionId: attached.sessionId }, attached.targetInfo?.type === "worker");
+});
+
+async function prepareWorker(session: Debuggee & { tabId: number }, isWorker: boolean): Promise<void> {
+  try {
+    const prelude = isWorker ? await loadWorkerPrelude(session.tabId) : "";
+    if (prelude) {
+      await sendCommand(session, "Runtime.evaluate", { expression: prelude });
+      // Workers created by this worker are its children, not the tab's.
+      await bestEffortCommand(session, "Target.setAutoAttach", WORKER_AUTO_ATTACH);
+    }
+  } catch {
+    // The worker keeps its native identity; it must still be resumed.
+  } finally {
+    await bestEffortCommand(session, "Runtime.runIfWaitingForDebugger");
+  }
+}
+
+const workerPreludes = new Map<number, string>();
+
+async function loadWorkerPrelude(tabId: number): Promise<string> {
+  const cached = workerPreludes.get(tabId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  // The service worker may have restarted since the override was applied.
+  const key = WORKER_PRELUDE_KEY_PREFIX + tabId;
+  const stored = (await chrome.storage?.session?.get(key))?.[key];
+  return typeof stored === "string" ? stored : "";
+}
+
+async function storeWorkerPrelude(tabId: number, prelude: string): Promise<void> {
+  workerPreludes.set(tabId, prelude);
+  try {
+    await chrome.storage?.session?.set({ [WORKER_PRELUDE_KEY_PREFIX + tabId]: prelude });
+  } catch {
+    // Without session storage, coverage lasts until the service worker restarts.
+  }
+}
+
+async function forgetWorkerPrelude(tabId: number): Promise<void> {
+  workerPreludes.delete(tabId);
+  try {
+    await chrome.storage?.session?.remove(WORKER_PRELUDE_KEY_PREFIX + tabId);
+  } catch {
+    // Nothing to clean up.
+  }
+}
 
 export interface AdvancedResult {
   attempted: boolean;
@@ -29,23 +94,31 @@ export interface AdvancedResult {
 export async function applyAdvancedOverrides(
   tabId: number,
   profile: Profile,
-  isCurrent: () => boolean = () => true
+  isCurrent: () => boolean = () => true,
+  workerPrelude = ""
 ): Promise<AdvancedResult> {
   if (!chrome.debugger) {
     return { attempted: false, applied: false };
   }
 
   return enqueueDebuggerOperation(tabId, () => isCurrent()
-    ? applyAdvancedOverridesNow(tabId, profile)
+    ? applyAdvancedOverridesNow(tabId, profile, workerPrelude)
     : Promise.resolve({ attempted: false, applied: false }));
 }
 
-async function applyAdvancedOverridesNow(tabId: number, profile: Profile): Promise<AdvancedResult> {
+async function applyAdvancedOverridesNow(tabId: number, profile: Profile, workerPrelude: string): Promise<AdvancedResult> {
   const target: Debuggee = { tabId };
   let acquiredSession = false;
   try {
     await attachIfNeeded(target, tabId);
     acquiredSession = true;
+    if (workerPrelude) {
+      // Workers loaded from a URL cannot be rewritten by the page, so their
+      // identity is evaluated in the worker itself. Failure leaves them native.
+      // This goes first: a page can start a worker as soon as it loads.
+      await storeWorkerPrelude(tabId, workerPrelude);
+      await bestEffortCommand(target, "Target.setAutoAttach", WORKER_AUTO_ATTACH);
+    }
     await sendCommand(target, "Emulation.setGeolocationOverride", {
       latitude: profile.latitude,
       longitude: profile.longitude,
@@ -100,6 +173,7 @@ async function clearAndDetachOwnedSession(target: Debuggee, tabId: number, force
   }
 
   ownedDebuggerTabs.add(tabId);
+  await forgetWorkerPrelude(tabId);
   await bestEffortCommand(target, "Emulation.clearGeolocationOverride");
   await bestEffortCommand(target, "Emulation.setTimezoneOverride", { timezoneId: "" });
   await bestEffortCommand(target, "Emulation.setLocaleOverride", { locale: "" });

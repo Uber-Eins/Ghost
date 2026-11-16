@@ -49,7 +49,8 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   });
   const storageArea = data => ({
     async get(key) { return { [key]: structuredClone(data[key]) }; },
-    async set(value) { Object.assign(data, structuredClone(value)); }
+    async set(value) { Object.assign(data, structuredClone(value)); },
+    async remove(key) { delete data[key]; }
   });
   const chrome = {
     storage: { local: storageArea(local), session: storageArea(session) },
@@ -92,14 +93,15 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     extension: { async isAllowedFileSchemeAccess() { return true; } },
     debugger: {
       onDetach: event("detach"),
+      onEvent: event("debuggerEvent"),
       async attach({ tabId }) { attached.add(tabId); },
       async detach(target) {
         attached.delete(target.tabId);
         for (const listener of events.detach ?? []) listener(target);
         detached.resolve();
       },
-      async sendCommand({ tabId }, method, params) {
-        calls.push({ type: "debugger", tabId, method, params });
+      async sendCommand({ tabId, sessionId }, method, params) {
+        calls.push({ type: "debugger", tabId, sessionId, method, params });
         if (blockDebugger && method === "Emulation.setGeolocationOverride") {
           blocked.resolve();
           await gate.promise;
@@ -145,7 +147,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     initialized: initialized.promise, detached: detached.promise,
     release() { gate.resolve(); },
     failNextGlobalUpdate() { failDynamic = true; },
-    fire(name) { for (const listener of events[name] ?? []) listener(); },
+    fire(name, ...args) { for (const listener of events[name] ?? []) listener(...args); },
     request(message, sender = {}) {
       return new Promise(resolve => {
         events.message[0](structuredClone(message), sender, resolve);
@@ -238,6 +240,35 @@ test("page profile replies and page notifications do not wait behind CDP", async
   } finally {
     h.release();
   }
+});
+
+test("dedicated workers receive the tab's identity before they start", async () => {
+  const h = harness();
+  const until = async predicate => {
+    for (let i = 0; i < 200 && !predicate(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(predicate());
+  };
+  const sessionCalls = sessionId => h.calls.filter(call => call.sessionId === sessionId).map(call => call.method);
+  await until(() => h.calls.some(call => call.method === "Target.setAutoAttach"));
+  const autoAttach = h.calls.find(call => call.method === "Target.setAutoAttach");
+  assert.equal(autoAttach.sessionId, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(autoAttach.params)), {
+    autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: "worker" }]
+  });
+
+  h.fire("debuggerEvent", { tabId: 7 }, "Target.attachedToTarget", { sessionId: "w1", targetInfo: { type: "worker" } });
+  await until(() => sessionCalls("w1").includes("Runtime.runIfWaitingForDebugger"));
+  assert.deepEqual(sessionCalls("w1"), ["Runtime.evaluate", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]);
+  const { expression } = h.calls.find(call => call.sessionId === "w1" && call.method === "Runtime.evaluate").params;
+  const workerNavigator = Object.create({ get userAgent() { return "native"; }, get language() { return "xx"; } });
+  vm.runInNewContext(expression, { self: { navigator: workerNavigator } });
+  assert.match(workerNavigator.userAgent, /Chrome\/152\.0\.0\.0/);
+  assert.notEqual(workerNavigator.language, "xx");
+
+  // Anything else that was paused is resumed untouched.
+  h.fire("debuggerEvent", { tabId: 7 }, "Target.attachedToTarget", { sessionId: "f1", targetInfo: { type: "iframe" } });
+  await until(() => sessionCalls("f1").length > 0);
+  assert.deepEqual(sessionCalls("f1"), ["Runtime.runIfWaitingForDebugger"]);
 });
 
 test("queued obsolete debugger settings are skipped and the latest disabled state wins", async () => {
