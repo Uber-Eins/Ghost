@@ -16,7 +16,19 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
       ready: true,
       strict: (function () { return this === undefined; })(),
       vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : null,
-      renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null
+      renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null,
+      navigator: {
+        language: navigator.language,
+        languages: navigator.languages,
+        languagesStable: navigator.languages === navigator.languages && Object.isFrozen(navigator.languages),
+        deviceMemory: navigator.deviceMemory,
+        globalPrivacyControl: navigator.globalPrivacyControl,
+        platform: navigator.platform,
+        userAgent: navigator.userAgent,
+        appVersion: navigator.appVersion,
+        userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null,
+        getterSource: Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator), "userAgent").get.toString()
+      }
     });
     self.onmessage = event => self.postMessage({ echo: event.data });
   `;
@@ -112,6 +124,22 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
       dateAndIntlStillProtected: Date !== nativePageApis.Date
         && Intl.DateTimeFormat !== nativePageApis.DateTimeFormat
     };
+    const pageNavigator = () => JSON.stringify({
+      language: navigator.language,
+      languages: navigator.languages,
+      languagesStable: true,
+      deviceMemory: navigator.deviceMemory,
+      globalPrivacyControl: navigator.globalPrivacyControl,
+      platform: navigator.platform,
+      userAgent: navigator.userAgent,
+      appVersion: navigator.appVersion,
+      userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null,
+      getterSource: "function get userAgent() { [native code] }"
+    });
+    for (const [name, result] of Object.entries({ classic, strict, module })) {
+      checks[`${name}WorkerNavigatorMatchesPage`] = JSON.stringify(result.navigator) === pageNavigator();
+    }
+    checks.untrackedWorkerNavigatorNative = JSON.stringify(untracked.navigator) === JSON.stringify(baseline.navigator);
     if (classic.vendor !== null && classic.ready) {
       checks.workerVendorProtected = classic.vendor === "Google Inc. (Intel)";
       checks.workerRendererProtected = classic.renderer === "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)";
