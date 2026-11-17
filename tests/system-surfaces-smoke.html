@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Ghost system surfaces smoke</title>
+  <style>body{font:14px/1.5 system-ui,sans-serif;margin:24px}pre{white-space:pre-wrap}</style>
+</head>
+<body>
+  <p>Serve on localhost with Ghost installed. Switch between US, German, French and Japanese profiles, then reload. Local voices and keys should follow the profile. Remote voices remain native. The keyboard API can reject in child frames; those rejections must be retained. Repeat with protection off, UA delegated, native UA mode and an excluded URL. Voice lists can change when the browser loads remote voices.</p>
+  <button id="refresh">Probe again</button>
+  <pre id="output">pending</pre>
+  <script>
+    const fields = ["name", "lang", "voiceURI", "localService", "default"];
+    async function probe(realm) {
+      const out = { locale: realm.navigator.language, platform: realm.navigator.platform };
+      if (realm.speechSynthesis) {
+        const voices = realm.speechSynthesis.getVoices();
+        out.voices = voices.map(v => Object.fromEntries(fields.map(k => [k, v[k]])));
+        out.voiceShapes = voices.map(v => ({
+          prototype: Object.getPrototypeOf(v) === realm.SpeechSynthesisVoice.prototype,
+          ownKeys: Reflect.ownKeys(v), tag: Object.prototype.toString.call(v)
+        }));
+        out.stableVoices = voices.every((v, i) => v === realm.speechSynthesis.getVoices()[i]);
+        const voice = voices.find(v => v.localService);
+        if (voice) {
+          const utterance = new realm.SpeechSynthesisUtterance("Ghost voice selection test");
+          try { utterance.voice = voice; out.voiceRoundTrip = utterance.voice === voice; }
+          catch (error) { out.voiceRoundTrip = error.toString(); }
+        }
+        out.getVoicesSource = realm.speechSynthesis.getVoices.toString();
+        out.voiceGetterSource = Object.getOwnPropertyDescriptor(realm.SpeechSynthesisVoice.prototype, "name").get.toString();
+      }
+      if (realm.navigator.keyboard) {
+        out.getLayoutMapSource = realm.navigator.keyboard.getLayoutMap.toString();
+        try {
+          const map = await realm.navigator.keyboard.getLayoutMap();
+          out.layout = [...map];
+          out.layoutShape = {
+            prototype: Object.getPrototypeOf(map) === realm.KeyboardLayoutMap.prototype,
+            ownKeys: Reflect.ownKeys(map), tag: Object.prototype.toString.call(map),
+            size: map.size, q: map.get("KeyQ"), hasQ: map.has("KeyQ"),
+            keys: [...map.keys()], values: [...map.values()],
+            entriesAlias: map.entries === map[Symbol.iterator],
+            iteratorTag: Object.prototype.toString.call(map.entries()),
+            iteratorNextSource: map.entries().next.toString()
+          };
+          const forEach = [];
+          map.forEach((v, k, self) => forEach.push([k, v, self === map]));
+          out.forEachMatches = forEach.every(([k,v,self], i) => self && k === out.layout[i][0] && v === out.layout[i][1]);
+        } catch (error) { out.layoutError = { name: error.name, message: error.message }; }
+      }
+      return out;
+    }
+    async function run() {
+      document.querySelectorAll("iframe").forEach(frame => frame.remove());
+      const out = { top: await probe(window), frames: {} };
+      for (const kind of ["about:blank", "srcdoc", "same-origin"]) {
+        const frame = document.createElement("iframe");
+        const loaded = new Promise(resolve => frame.onload = resolve);
+        if (kind === "srcdoc") frame.srcdoc = "<!doctype html><title>child</title>";
+        else frame.src = kind === "same-origin" ? "./system-surfaces-smoke.html?child" : "about:blank";
+        document.body.append(frame);
+        const early = await probe(frame.contentWindow);
+        await loaded;
+        const child = await probe(frame.contentWindow);
+        out.frames[kind] = {
+          early, child,
+          voicesMatch: JSON.stringify(child.voices) === JSON.stringify(out.top.voices),
+          layoutMatches: child.layout ? JSON.stringify(child.layout) === JSON.stringify(out.top.layout) : "native rejection"
+        };
+      }
+      document.getElementById("output").textContent = JSON.stringify(out, null, 2);
+    }
+    if (!location.search) {
+      document.getElementById("refresh").onclick = run;
+      run().catch(error => document.getElementById("output").textContent = error.stack);
+    }
+  </script>
+</body>
+</html>

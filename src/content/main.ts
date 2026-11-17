@@ -1,3 +1,5 @@
+import { voicesForProfile, type ProfileVoice } from "../shared/voices";
+import { keyboardLayoutForProfile } from "../shared/keyboard";
 import { stableNumber, stableSeed } from "../shared/hash";
 import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts";
 import { strictModeForBlobParts } from "../shared/worker-blob";
@@ -38,6 +40,7 @@ interface GhostController {
 interface ParentIdentity {
   profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
   globalPrivacyControl: boolean;
+  localVoices: () => ProfileVoice[] | null;
   userAgent: {
     platform: unknown;
     vendor: unknown;
@@ -138,6 +141,8 @@ const reloadOnProfileChangeRequestIds = new Set<number>();
 let cachedUserAgentData: { key: string; value: object } | null = null;
 let cachedLanguages: { key: string; value: readonly string[] } | null = null;
 const synchronizedChildNavigators = new WeakSet<object>();
+const patchedSpeechRealms = new WeakSet<object>();
+const patchedKeyboardRealms = new WeakSet<object>();
 
 Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
   configurable: false,
@@ -209,6 +214,8 @@ function install(): void {
     return;
   }
   patchNavigator();
+  patchSpeechSynthesis(window);
+  patchKeyboard(window);
   patchIframeNavigatorAccess();
   installTimePatches({
     enabled: () => state.enabled,
@@ -510,6 +517,20 @@ function readParentIdentity(): ParentIdentity | null {
           intlLocale: options.locale
         },
         globalPrivacyControl: Boolean(nav.globalPrivacyControl),
+        // UA values alone cannot reveal ownership on a host whose native UA
+        // already matches the profile. Read this surface publicly as well.
+        localVoices: () => {
+          try {
+            return parentGlobal.speechSynthesis
+              ? Array.from(parentGlobal.speechSynthesis.getVoices())
+                .filter((voice) => voice.localService)
+                .map(({ name, lang, voiceURI, localService, default: isDefault }) => ({ name, lang, voiceURI, localService, default: isDefault }))
+              : null;
+          } catch {
+            // An opener can navigate cross-origin after this frame installs.
+            return null;
+          }
+        },
         userAgent: userAgentOwned ? userAgent : null
       };
     } catch {
@@ -559,8 +580,8 @@ function maskAsNative<T>(wrapper: T, native: unknown): T {
   return wrapper;
 }
 
-function patchFunctionToString(): void {
-  const nativeToString = Function.prototype.toString;
+function patchFunctionToString(realm: Window & typeof globalThis = window): void {
+  const nativeToString = realm.Function.prototype.toString;
   const maskedToString = function toString(this: unknown): string {
     const source = (typeof this === "function" || (typeof this === "object" && this !== null))
       ? nativeFunctionSources.get(this as object)
@@ -569,7 +590,7 @@ function patchFunctionToString(): void {
   };
   nativeFunctionSources.set(maskedToString, nativeToString);
   try {
-    Object.defineProperty(Function.prototype, "toString", {
+    Object.defineProperty(realm.Function.prototype, "toString", {
       configurable: true,
       writable: true,
       value: maskedToString
@@ -751,10 +772,213 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
         }
       }
     }
+    // Direct iframe access can precede all-frame injection. Install these in
+    // the child's realm as well, using this document's live profile. Do not
+    // extend protection into excluded child documents.
+    const childUrl = currentChildPageUrl(childGlobal);
+    const relatedChild = childGlobal.location.href === "about:blank" || childGlobal.location.href === "about:srcdoc";
+    // A related-only install has no exclusion settings. Its navigated children
+    // must use their own bootstrap rather than risk patching a custom exclusion.
+    const canCheckExclusions = pendingBootstrap?.settings !== undefined || relatedChild;
+    if (canCheckExclusions && childUrl && !isExcludedUrl(childUrl, pendingBootstrap?.settings?.excludedDomains ?? DEFAULT_EXCLUDED_DOMAINS)) {
+      patchFunctionToString(childGlobal);
+      patchSpeechSynthesis(childGlobal);
+      patchKeyboard(childGlobal);
+    }
     synchronizedChildNavigators.add(childNavigator);
   } catch {
     // Cross-origin frame globals are intentionally inaccessible to the parent.
   }
+}
+
+function currentChildPageUrl(child: Window & typeof globalThis): string {
+  const url = child.location.href;
+  return url === "about:blank" || url === "about:srcdoc" ? initialPageUrl : isSupportedPageUrl(url) ? url : "";
+}
+
+function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
+  const synth = realm.speechSynthesis;
+  const voicePrototype = realm.SpeechSynthesisVoice?.prototype;
+  const utterancePrototype = realm.SpeechSynthesisUtterance?.prototype;
+  if (!synth || !voicePrototype || !utterancePrototype || patchedSpeechRealms.has(realm)) return;
+  patchedSpeechRealms.add(realm);
+  const synthPrototype = realm.Object.getPrototypeOf(synth) as SpeechSynthesis;
+  const nativeGetVoices = synthPrototype.getVoices;
+  if (typeof nativeGetVoices !== "function") return;
+  const fakeVoices = new WeakMap<object, ProfileVoice>();
+  const assignedVoices = new WeakMap<object, SpeechSynthesisVoice>();
+  let cache: { key: string; voices: SpeechSynthesisVoice[] } | null = null;
+  const active = (): boolean => state.enabled && (parentIdentity !== null || (state.uaSpoofingEnabled
+    && state.profile.uaMode !== "native" && realm.navigator.platform !== "MacIntel"));
+  for (const property of ["name", "lang", "voiceURI", "localService", "default"] as const) {
+    const descriptor = realm.Object.getOwnPropertyDescriptor(voicePrototype, property);
+    const nativeGetter = descriptor?.get;
+    if (!descriptor || !nativeGetter) continue;
+    realm.Object.defineProperty(voicePrototype, property, {
+      ...descriptor,
+      get: maskAsNative(new Proxy(nativeGetter, {
+        apply(target, receiver, args) {
+          const voice = fakeVoices.get(receiver);
+          return voice ? voice[property] : Reflect.apply(target, receiver, args);
+        }
+      }), nativeGetter)
+    });
+  }
+  defineMethod(synthPrototype, "getVoices", maskAsNative(new Proxy(nativeGetVoices, {
+    apply(target, receiver, args) {
+      const nativeVoices = Reflect.apply(target, receiver, args) as SpeechSynthesisVoice[];
+      if (!active()) return nativeVoices;
+      const descriptions = parentIdentity
+        ? parentIdentity.localVoices()
+        : voicesForProfile(state.profile, realm.navigator.platform);
+      if (!descriptions) return nativeVoices;
+      if (parentIdentity && sameJson(descriptions, nativeVoices.filter((voice) => voice.localService)
+        .map(({ name, lang, voiceURI, localService, default: isDefault }) => ({ name, lang, voiceURI, localService, default: isDefault })))) {
+        return nativeVoices;
+      }
+      const key = JSON.stringify(descriptions);
+      if (cache?.key !== key) {
+        const voices = descriptions.map((description) => {
+          const voice = realm.Object.create(voicePrototype) as SpeechSynthesisVoice;
+          fakeVoices.set(voice, description);
+          return voice;
+        });
+        cache = { key, voices };
+      }
+      // Local profile voices are available immediately, even on the first
+      // call. Keep native voiceschanged events untouched: they still announce
+      // the browser's asynchronous remote-voice loading; no synthetic events.
+      return realm.Array.from([...cache.voices, ...nativeVoices.filter((voice) => !voice.localService)]);
+    }
+  }), nativeGetVoices));
+  const descriptor = realm.Object.getOwnPropertyDescriptor(utterancePrototype, "voice");
+  const nativeGetter = descriptor?.get;
+  const nativeSetter = descriptor?.set;
+  if (!descriptor || !nativeGetter || !nativeSetter) return;
+  realm.Object.defineProperty(utterancePrototype, "voice", {
+    ...descriptor,
+    get: maskAsNative(new Proxy(nativeGetter, {
+      apply(target, receiver, args) {
+        const nativeVoice = Reflect.apply(target, receiver, args);
+        return active() ? assignedVoices.get(receiver) ?? nativeVoice : nativeVoice;
+      }
+    }), nativeGetter),
+    set: maskAsNative(new Proxy(nativeSetter, {
+      apply(target, receiver, args) {
+        const voice = args[0] as SpeechSynthesisVoice | null;
+        const description = voice && fakeVoices.get(voice);
+        if (description) {
+          const nativeVoices = Reflect.apply(nativeGetVoices, synth, []) as SpeechSynthesisVoice[];
+          const match = nativeVoices.find((candidate) => candidate.lang.toLowerCase() === description.lang.toLowerCase());
+          const result = Reflect.apply(target, receiver, [match ?? null]);
+          assignedVoices.set(receiver, voice);
+          return result;
+        }
+        const result = Reflect.apply(target, receiver, args);
+        assignedVoices.delete(receiver);
+        return result;
+      }
+    }), nativeSetter)
+  });
+}
+
+function patchKeyboard(realm: Window & typeof globalThis): void {
+  // The Keyboard API is absent in insecure contexts and in older Chromium.
+  const keyboardGlobal = realm as typeof realm & {
+    KeyboardLayoutMap?: { prototype: object };
+    navigator: Navigator & { keyboard?: object };
+  };
+  const keyboard = keyboardGlobal.navigator.keyboard;
+  const prototype = keyboardGlobal.KeyboardLayoutMap?.prototype;
+  if (!keyboard || !prototype || patchedKeyboardRealms.has(realm)) return;
+  patchedKeyboardRealms.add(realm);
+  const keyboardPrototype = realm.Object.getPrototypeOf(keyboard) as { getLayoutMap?: Function };
+  const nativeGetLayoutMap = keyboardPrototype.getLayoutMap;
+  const nativeKeys = realm.Object.getOwnPropertyDescriptor(prototype, "keys")?.value as Function | undefined;
+  if (!nativeGetLayoutMap || !nativeKeys) return;
+  const fakeMaps = new WeakMap<object, Map<string, string>>();
+  const backingMaps = new WeakMap<object, object>();
+  const fakeIterators = new WeakMap<object, Iterator<unknown>>();
+  const patchedIteratorPrototypes = new WeakSet<object>();
+  const iteratorFor = (nativeMethod: Function, receiver: object, map: Map<string, string>, property: PropertyKey): object => {
+    const iterator = Reflect.apply(nativeMethod, backingMaps.get(receiver), []) as object;
+    const iteratorPrototype = realm.Object.getPrototypeOf(iterator) as { next: Function };
+    if (!patchedIteratorPrototypes.has(iteratorPrototype)) {
+      const nativeNext = iteratorPrototype.next;
+      defineMethod(iteratorPrototype, "next", maskAsNative(new Proxy(nativeNext, {
+        apply(target, iteratorReceiver, args) {
+          const fake = fakeIterators.get(iteratorReceiver);
+          return fake ? fake.next() : Reflect.apply(target, iteratorReceiver, args);
+        }
+      }), nativeNext));
+      patchedIteratorPrototypes.add(iteratorPrototype);
+    }
+    const fake = Reflect.apply(map[property as "entries" | "keys" | "values" | typeof Symbol.iterator], map, []) as Iterator<unknown>;
+    fakeIterators.set(iterator, fake);
+    return iterator;
+  };
+  const methodWrappers = new Map<Function, Function>();
+  for (const property of ["get", "has", "entries", "keys", "values", "forEach", Symbol.iterator]) {
+    const nativeMethod = realm.Object.getOwnPropertyDescriptor(prototype, property)?.value as Function | undefined;
+    if (!nativeMethod) continue;
+    const wrapper = methodWrappers.get(nativeMethod) ?? maskAsNative(new Proxy(nativeMethod, {
+      apply(target, receiver, args) {
+        const map = fakeMaps.get(receiver);
+        if (!map) return Reflect.apply(target, receiver, args);
+        if (property === "get" || property === "has") {
+          // WebIDL maplike keys are required DOMStrings, not arbitrary Map keys.
+          if (!args.length || typeof args[0] === "symbol") throw new realm.TypeError("Invalid KeyboardLayoutMap key");
+          return map[property](String(args[0]));
+        }
+        if (property === "forEach") {
+          const callback = args[0] as Function;
+          if (typeof callback !== "function") throw new realm.TypeError("Callback must be a function");
+          return map.forEach((value, key) => Reflect.apply(callback, args[1], [value, key, receiver]));
+        }
+        return iteratorFor(target, receiver, map, property);
+      }
+    }), nativeMethod);
+    methodWrappers.set(nativeMethod, wrapper);
+    defineMethod(prototype, property, wrapper);
+  }
+  const sizeDescriptor = realm.Object.getOwnPropertyDescriptor(prototype, "size");
+  const nativeSize = sizeDescriptor?.get;
+  if (sizeDescriptor && nativeSize) {
+    realm.Object.defineProperty(prototype, "size", {
+      ...sizeDescriptor,
+      get: maskAsNative(new Proxy(nativeSize, {
+        apply(target, receiver, args) {
+          const map = fakeMaps.get(receiver);
+          return map ? map.size : Reflect.apply(target, receiver, args);
+        }
+      }), nativeSize)
+    });
+  }
+  defineMethod(keyboardPrototype, "getLayoutMap", maskAsNative(new Proxy(nativeGetLayoutMap, {
+    apply(target, receiver, args) {
+      // Always let Chromium enforce permissions policy and frame restrictions.
+      const promise = Reflect.apply(target, receiver, args) as Promise<object>;
+      return promise.then((nativeMap) => {
+        if (!state.enabled) return nativeMap;
+        const layout = new realm.Map(keyboardLayoutForProfile(state.profile));
+        const ordered = new realm.Map<string, string>();
+        // Blink iterates a HashMap, not the browser process's sorted map. Keep
+        // its observable order for shared codes; append profile-only codes in
+        // deterministic code order rather than guessing Blink's hash ordering.
+        const codes = Reflect.apply(nativeKeys, nativeMap, []) as Iterable<string>;
+        for (const code of codes) {
+          if (layout.has(code)) ordered.set(code, layout.get(code)!);
+        }
+        for (const [code, key] of layout) {
+          if (!ordered.has(code)) ordered.set(code, key);
+        }
+        const fakeMap = realm.Object.create(prototype) as object;
+        fakeMaps.set(fakeMap, ordered);
+        backingMaps.set(fakeMap, nativeMap);
+        return fakeMap;
+      });
+    }
+  }), nativeGetLayoutMap));
 }
 
 function profileLanguages(): readonly string[] {
@@ -1319,7 +1543,7 @@ function findDescriptorOwner(prototype: object | null, property: string): object
   return null;
 }
 
-function defineMethod(target: object, property: string, value: unknown): void {
+function defineMethod(target: object, property: PropertyKey, value: unknown): void {
   try {
     Object.defineProperty(target, property, {
       configurable: true,
