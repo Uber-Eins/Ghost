@@ -9,7 +9,6 @@ export interface WorkerIdentityOptions {
   profile: Profile;
   /** The browser's real User-Agent, used to derive the Chromium version. */
   baseUserAgent: string;
-  globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;
   webgpuAdapterInfo: WebgpuAdapterInfo;
@@ -27,7 +26,6 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
     language: profile.locale,
     languages: profile.languages,
     deviceMemory: profile.deviceMemory,
-    globalPrivacyControl: options.globalPrivacyControlEnabled,
     userAgent: options.uaSpoofingEnabled
       ? {
         platform: navigatorPlatformForProfile(profile, baseUserAgent),
@@ -53,7 +51,7 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
   ].join("");
 }
 
-// Mirrors patchNavigator/patchGlobalPrivacyControl on WorkerNavigator, which
+// Mirrors patchNavigator on WorkerNavigator, which
 // has no `vendor`.
 function workerNavigatorPrelude(identity: object): string {
   return [
@@ -62,11 +60,10 @@ function workerNavigatorPrelude(identity: object): string {
     "var defineNav=function(key,read){var descriptor=Object.getOwnPropertyDescriptor(navProto,key),nativeGetter=descriptor&&descriptor.get;try{",
     "Object.defineProperty(navProto,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:nativeGetter?mask(wrapNative(nativeGetter,function(target,receiver,args){Reflect.apply(target,receiver,args);return read();}),nativeGetter):Object.getOwnPropertyDescriptor({get [key](){return read();}},key).get});",
     "}catch(error){}};",
-    "var languages=Object.freeze(identity.languages),nativeGpc=!!nav.globalPrivacyControl;",
+    "var languages=Object.freeze(identity.languages);",
     "defineNav(\"language\",function(){return identity.language;});",
     "defineNav(\"languages\",function(){return languages;});",
     "defineNav(\"deviceMemory\",function(){return identity.deviceMemory;});",
-    "defineNav(\"globalPrivacyControl\",function(){return identity.globalPrivacyControl||nativeGpc;});",
     "var ua=identity.userAgent;if(ua){",
     "defineNav(\"platform\",function(){return ua.platform;});",
     "defineNav(\"userAgent\",function(){return ua.userAgent;});",

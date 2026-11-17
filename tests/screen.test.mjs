@@ -146,7 +146,7 @@ function harness() {
     var installedSurfaceOwnership = { profileProtection: true, userAgent: true };
     function syncUserAgentDataDescriptor() {}
     var cachedUserAgentData = null, cachedLanguages = null, hasResolvedProfile = true, restoredPageNeedsReload = false;
-    var initialEnabled = true, initialGlobalPrivacyControlEnabled, initialUserAgentSpoofingEnabled = true;
+    var initialEnabled = true, initialUserAgentSpoofingEnabled = true;
     var initialCanvasMeasureTextSpoofingEnabled, initialWebglInfoSpoofingEnabled, initialSiteKey, initialSeed;
     var initialProfileSignature;
     var location = { reload() { throw new Error('Unexpected reload'); } };

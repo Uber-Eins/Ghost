@@ -10,7 +10,7 @@ import { isSupportedPageUrl } from "../shared/internal";
 import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import { installTimePatches } from "../shared/time-patch";
-import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../shared/storage";
+import { normalizeSettings, resolveProfile } from "../shared/storage";
 import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
@@ -19,7 +19,6 @@ declare const __GHOST_RELATED_ONLY__: boolean;
 
 interface GhostState {
   enabled: boolean;
-  globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   canvasMeasureTextSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;
@@ -42,7 +41,6 @@ interface GhostController {
 // surfaces so the parent never has to expose its settings or canvas seed.
 interface ParentIdentity {
   profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
-  globalPrivacyControl: boolean;
   localVoices: () => ProfileVoice[] | null;
   screen: () => ProfileScreen | null;
   webglInfo: () => { vendor: string; renderer: string };
@@ -84,8 +82,7 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "userAgent",
   "appVersion",
   "userAgentData",
-  "deviceMemory",
-  "globalPrivacyControl"
+  "deviceMemory"
 ]);
 const nativeNavigator = snapshotNavigator();
 const nativeGeolocation = navigator.geolocation;
@@ -102,9 +99,6 @@ const bootstrapProfile = pendingBootstrap
 const baseProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
 const fallbackProfile: Profile = parentIdentity ? { ...baseProfile, ...parentIdentity.profile } : baseProfile;
 const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
-const initialGlobalPrivacyControlEnabled = bootstrapProfile?.globalPrivacyControlEnabled
-  ?? parentIdentity?.globalPrivacyControl
-  ?? DEFAULT_SETTINGS.globalPrivacyControlEnabled;
 const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled
   ?? (parentIdentity ? parentIdentity.userAgent !== null : initialEnabled);
 const initialCanvasMeasureTextSpoofingEnabled = bootstrapProfile?.canvasMeasureTextSpoofingEnabled ?? initialEnabled;
@@ -113,7 +107,6 @@ const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
 const initialSeed = bootstrapProfile?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
 const state: GhostState = {
   enabled: initialEnabled,
-  globalPrivacyControlEnabled: initialGlobalPrivacyControlEnabled,
   uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
   canvasMeasureTextSpoofingEnabled: initialCanvasMeasureTextSpoofingEnabled,
   webglInfoSpoofingEnabled: initialWebglInfoSpoofingEnabled,
@@ -185,7 +178,6 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
     || installedSurfaceOwnership.webglInfo !== resolved.webglInfoSpoofingEnabled
   );
   state.enabled = resolved.enabled;
-  state.globalPrivacyControlEnabled = resolved.globalPrivacyControlEnabled;
   state.uaSpoofingEnabled = resolved.uaSpoofingEnabled;
   state.canvasMeasureTextSpoofingEnabled = resolved.canvasMeasureTextSpoofingEnabled;
   state.webglInfoSpoofingEnabled = resolved.webglInfoSpoofingEnabled;
@@ -206,7 +198,6 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
   }
   if (
     initialEnabled !== resolved.enabled
-    || initialGlobalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || initialUserAgentSpoofingEnabled !== resolved.uaSpoofingEnabled
     || initialCanvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
     || initialWebglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
@@ -225,10 +216,9 @@ function install(): void {
   (window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled = true;
 
   patchFunctionToString();
-  patchGlobalPrivacyControl();
   if (!installedSurfaceOwnership.profileProtection) {
     // Excluded documents (including Turnstile challenge frames) must keep
-    // profile-related prototypes native. GPC remains an independent signal.
+    // profile-related prototypes native.
     return;
   }
   patchNavigator();
@@ -418,7 +408,6 @@ function profileSignature(profile: Profile): string {
 function profileChanged(resolved: ResolvedProfile): boolean {
   return hasResolvedProfile && (
     state.enabled !== resolved.enabled
-    || state.globalPrivacyControlEnabled !== resolved.globalPrivacyControlEnabled
     || state.uaSpoofingEnabled !== resolved.uaSpoofingEnabled
     || state.canvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
     || state.webglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
@@ -502,8 +491,7 @@ function snapshotNavigator(): Record<string, unknown> {
     userAgent: nav.userAgent,
     appVersion: nav.appVersion,
     userAgentData: nav.userAgentData,
-    deviceMemory: nav.deviceMemory,
-    globalPrivacyControl: nav.globalPrivacyControl
+    deviceMemory: nav.deviceMemory
   };
 }
 
@@ -537,7 +525,6 @@ function readParentIdentity(): ParentIdentity | null {
           timezoneId: options.timeZone,
           intlLocale: options.locale
         },
-        globalPrivacyControl: Boolean(nav.globalPrivacyControl),
         // UA values alone cannot reveal ownership on a host whose native UA
         // already matches the profile. Read this surface publicly as well.
         localVoices: () => {
@@ -626,15 +613,6 @@ function patchFunctionToString(realm: Window & typeof globalThis = window): void
   } catch {
     // Leave toString native if the page froze Function.prototype.
   }
-}
-
-function patchGlobalPrivacyControl(): void {
-  defineNavigatorGetter("globalPrivacyControl", function globalPrivacyControl() {
-    if (state.globalPrivacyControlEnabled) {
-      return true;
-    }
-    return Boolean(readNativeNavigatorProperty("globalPrivacyControl"));
-  });
 }
 
 function patchNavigator(): void {
@@ -734,7 +712,6 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
       "language",
       "languages",
       "deviceMemory",
-      "globalPrivacyControl",
       "platform",
       "vendor",
       "userAgent",
@@ -1696,7 +1673,6 @@ function workerIdentityPrelude(): string {
   return buildWorkerIdentityPrelude({
     profile: mirrored ? { ...state.profile, webglVendor: mirrored.vendor, webglRenderer: mirrored.renderer } : state.profile,
     baseUserAgent: spoofingBaseUserAgentString(),
-    globalPrivacyControlEnabled: state.globalPrivacyControlEnabled,
     uaSpoofingEnabled: state.uaSpoofingEnabled,
     webglInfoSpoofingEnabled: state.webglInfoSpoofingEnabled,
     webgpuAdapterInfo: webgpuInfoForRealm(window)()

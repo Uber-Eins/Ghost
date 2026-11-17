@@ -10,7 +10,6 @@ import {
   Cpu,
   Fingerprint,
   Globe,
-  Hand,
   Info,
   Languages,
   Layers,
@@ -549,16 +548,6 @@ function OptionsApp(): React.ReactElement {
                     checked={settings.enabled}
                     onCheckedChange={(checked) => updateSettings((current) => ({ ...current, enabled: checked }))}
                     aria-label={t("globalProtection")}
-                  />
-                </SettingRow>
-                <SettingRow icon={Hand} title={t("globalPrivacyControl")} description={t("globalPrivacyControlSubtitle")}>
-                  <Switch
-                    checked={settings.globalPrivacyControlEnabled}
-                    onCheckedChange={(checked) => updateSettings((current) => ({
-                      ...current,
-                      globalPrivacyControlEnabled: checked
-                    }))}
-                    aria-label={t("globalPrivacyControl")}
                   />
                 </SettingRow>
                 <SettingRow
