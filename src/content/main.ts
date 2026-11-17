@@ -1,3 +1,4 @@
+import { screenForProfile, rewriteScreenMediaQuery, type ProfileScreen } from "../shared/screen";
 import { voicesForProfile, type ProfileVoice } from "../shared/voices";
 import { keyboardLayoutForProfile } from "../shared/keyboard";
 import { stableNumber, stableSeed } from "../shared/hash";
@@ -42,6 +43,7 @@ interface ParentIdentity {
   profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
   globalPrivacyControl: boolean;
   localVoices: () => ProfileVoice[] | null;
+  screen: () => ProfileScreen | null;
   userAgent: {
     platform: unknown;
     vendor: unknown;
@@ -144,6 +146,8 @@ let cachedLanguages: { key: string; value: readonly string[] } | null = null;
 const synchronizedChildNavigators = new WeakSet<object>();
 const patchedSpeechRealms = new WeakSet<object>();
 const patchedKeyboardRealms = new WeakSet<object>();
+const patchedScreenRealms = new WeakSet<object>();
+let refreshScreenProfile: (() => void) | null = null;
 
 Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
   configurable: false,
@@ -180,8 +184,10 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
   state.canvasMeasureTextSpoofingEnabled = resolved.canvasMeasureTextSpoofingEnabled;
   state.webglInfoSpoofingEnabled = resolved.webglInfoSpoofingEnabled;
   state.siteKey = resolved.siteKey;
+  const screenProfileChanged = profileSignature(state.profile) !== profileSignature(resolved.profile);
   state.profile = resolved.profile;
   state.seed = resolved.seed;
+  if (screenProfileChanged) refreshScreenProfile?.();
   cachedUserAgentData = null;
   cachedLanguages = null;
   hasResolvedProfile = true;
@@ -222,6 +228,7 @@ function install(): void {
   patchNavigator();
   patchSpeechSynthesis(window);
   patchKeyboard(window);
+  patchScreen(window);
   patchIframeNavigatorAccess();
   installTimePatches({
     enabled: () => state.enabled,
@@ -538,6 +545,15 @@ function readParentIdentity(): ParentIdentity | null {
             return null;
           }
         },
+        screen: () => {
+          try {
+            const { width, height, availWidth, availHeight, availLeft, availTop } = parentGlobal.screen as Screen & ProfileScreen;
+            return { width, height, availWidth, availHeight, availLeft, availTop };
+          } catch {
+            // An opener can navigate cross-origin after this frame installs.
+            return null;
+          }
+        },
         userAgent: userAgentOwned ? userAgent : null
       };
     } catch {
@@ -791,6 +807,7 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
       patchFunctionToString(childGlobal);
       patchSpeechSynthesis(childGlobal);
       patchKeyboard(childGlobal);
+      patchScreen(childGlobal);
     }
     synchronizedChildNavigators.add(childNavigator);
   } catch {
@@ -801,6 +818,75 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
 function currentChildPageUrl(child: Window & typeof globalThis): string {
   const url = child.location.href;
   return url === "about:blank" || url === "about:srcdoc" ? initialPageUrl : isSupportedPageUrl(url) ? url : "";
+}
+
+function patchScreen(realm: Window & typeof globalThis): void {
+  const prototype = realm.Screen?.prototype;
+  if (!prototype || patchedScreenRealms.has(realm)) return;
+  patchedScreenRealms.add(realm);
+  // Snapshot once, not on resize. Only an actual profile change invalidates it.
+  const derive = (): ProfileScreen | null => screenForProfile(state.profile, realm.navigator.platform, { width: realm.outerWidth, height: realm.outerHeight });
+  let screen = derive();
+  if (realm === window && !parentIdentity) refreshScreenProfile = () => { screen = derive(); };
+  const reportedScreen = (): ProfileScreen | null => {
+    if (!state.enabled) return null;
+    if (realm !== window) {
+      // Direct child access must mirror this document, not the child's fallback
+      // profile or iframe viewport. Parent getters also handle native UA mode.
+      const { width, height, availWidth, availHeight, availLeft, availTop } = window.screen as Screen & ProfileScreen;
+      return { width, height, availWidth, availHeight, availLeft, availTop };
+    }
+    if (parentIdentity) return parentIdentity.screen();
+    if (!state.uaSpoofingEnabled || state.profile.uaMode === "native") return null;
+    return screen;
+  };
+  for (const property of ["width", "height", "availWidth", "availHeight", "availLeft", "availTop", "isExtended"] as const) {
+    const descriptor = realm.Object.getOwnPropertyDescriptor(prototype, property);
+    const nativeGetter = descriptor?.get;
+    // availLeft/availTop and isExtended are not exposed by every browser.
+    if (!descriptor || !nativeGetter) continue;
+    realm.Object.defineProperty(prototype, property, {
+      ...descriptor,
+      get: maskAsNative(new Proxy(nativeGetter, {
+        apply(target, receiver, args) {
+          const nativeValue = Reflect.apply(target, receiver, args);
+          if (property === "isExtended") return state.enabled ? false : nativeValue;
+          return reportedScreen()?.[property] ?? nativeValue;
+        }
+      }), nativeGetter)
+    });
+  }
+  const nativeMatchMedia = realm.matchMedia;
+  const mediaPrototype = realm.MediaQueryList?.prototype;
+  const descriptor = mediaPrototype && realm.Object.getOwnPropertyDescriptor(mediaPrototype, "media");
+  const nativeMedia = descriptor?.get;
+  if (typeof nativeMatchMedia !== "function" || !mediaPrototype || !descriptor || !nativeMedia) return;
+  const originalQueries = new WeakMap<object, string>();
+  realm.Object.defineProperty(mediaPrototype, "media", {
+    ...descriptor,
+    get: maskAsNative(new Proxy(nativeMedia, {
+      apply(target, receiver, args) {
+        const nativeValue = Reflect.apply(target, receiver, args);
+        return originalQueries.get(receiver) ?? nativeValue;
+      }
+    }), nativeMedia)
+  });
+  defineMethod(realm, "matchMedia", maskAsNative(new Proxy(nativeMatchMedia, {
+    apply(target, receiver, args) {
+      const screen = reportedScreen();
+      if (!screen || !args.length || typeof args[0] === "symbol") return Reflect.apply(target, receiver, args);
+      const query = String(args[0]);
+      const rewritten = rewriteScreenMediaQuery(query, screen);
+      const result = Reflect.apply(target, receiver, [rewritten, ...args.slice(1)]) as MediaQueryList;
+      if (rewritten !== query) {
+        // Report the browser's own serialization of the page's query, not the
+        // raw string, so casing and whitespace normalise exactly as native.
+        const serialized = Reflect.apply(nativeMedia, Reflect.apply(target, receiver, [query, ...args.slice(1)]), []) as string;
+        originalQueries.set(result, serialized);
+      }
+      return result;
+    }
+  }), nativeMatchMedia));
 }
 
 function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
