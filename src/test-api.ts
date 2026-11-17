@@ -1,3 +1,5 @@
+export { voicesForProfile } from "./shared/voices";
+export { keyboardLayoutForProfile } from "./shared/keyboard";
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
 export { constructDateWithNewTarget } from "./shared/date-constructor";
 export { strictModeForBlobParts } from "./shared/worker-blob";
