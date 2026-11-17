@@ -13,9 +13,7 @@ export interface WorkerIdentityOptions {
 }
 
 // Script source that gives a worker global the same identity as the page. It
-// is prefixed to tracked Blob workers by the page and evaluated over CDP in
-// other dedicated workers by the Advanced build. Running it twice in one
-// worker is harmless: the second pass wraps the first with the same values.
+// is prefixed to tracked Blob workers by the page.
 export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
   const { profile, baseUserAgent } = options;
   // Values are resolved here so the worker reports exactly what the page's
