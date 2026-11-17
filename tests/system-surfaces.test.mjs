@@ -5,6 +5,11 @@ import vm from "node:vm";
 import ts from "typescript";
 import { PRESET_PROFILES, LOCALE_PRESETS, voicesForProfile, keyboardLayoutForProfile } from "../dist/test/test-api.js";
 
+const nativeWrapperCode = ts.transpileModule(
+  readFileSync(new URL("../src/shared/native-wrapper.ts", import.meta.url), "utf8").replaceAll("export ", ""),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+).outputText;
+
 const profile = (locale, languages = [locale]) => ({ ...PRESET_PROFILES[0], locale, languages });
 const layout = (locale) => new Map(keyboardLayoutForProfile(profile(locale)));
 
@@ -187,7 +192,7 @@ function patchHarness(locale = "en-US") {
       toString: Function.prototype.toString
     };
   `, context);
-  vm.runInContext(patchCode, context);
+  vm.runInContext(nativeWrapperCode + patchCode, context);
   vm.runInContext("patchFunctionToString(); patchSpeechSynthesis(window); patchKeyboard(window);", context);
   return { context, run: (code) => vm.runInContext(code, context) };
 }

@@ -1,3 +1,4 @@
+import { wrapNative, wrapNativeMethod } from "../shared/native-wrapper";
 import { screenForProfile, rewriteScreenMediaQuery, type ProfileScreen } from "../shared/screen";
 import { voicesForProfile, type ProfileVoice } from "../shared/voices";
 import { keyboardLayoutForProfile } from "../shared/keyboard";
@@ -381,11 +382,11 @@ function patchHistoryMethod(method: "pushState" | "replaceState"): void {
     Object.defineProperty(history, method, {
       configurable: true,
       writable: true,
-      value: maskAsNative(function historyMethod(this: History, ...args: Parameters<History["pushState"]>) {
-        const result = native.apply(this, args);
+      value: maskAsNative(wrapNative(native, (target, receiver, args) => {
+        const result = Reflect.apply(target, receiver, args);
         queueMicrotask(() => requestResolvedProfile(true));
         return result;
-      }, native)
+      }), native)
     });
   } catch {
     // Some pages make history methods non-configurable.
@@ -612,12 +613,9 @@ function maskAsNative<T>(wrapper: T, native: unknown): T {
 
 function patchFunctionToString(realm: Window & typeof globalThis = window): void {
   const nativeToString = realm.Function.prototype.toString;
-  const maskedToString = function toString(this: unknown): string {
-    const source = (typeof this === "function" || (typeof this === "object" && this !== null))
-      ? nativeFunctionSources.get(this as object)
-      : undefined;
-    return Reflect.apply(nativeToString, source ?? this, []) as string;
-  };
+  const maskedToString = wrapNative(nativeToString, (target, receiver, args) =>
+    Reflect.apply(target, nativeFunctionSources.get(receiver) ?? receiver, args)
+  );
   nativeFunctionSources.set(maskedToString, nativeToString);
   try {
     Object.defineProperty(realm.Function.prototype, "toString", {
@@ -674,12 +672,10 @@ function patchIframeNavigatorAccess(): void {
   const contentWindowDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentWindow");
   const nativeGetContentWindow = contentWindowDescriptor?.get;
   if (contentWindowDescriptor && nativeGetContentWindow) {
-    const wrappedGetter = maskAsNative(new Proxy(nativeGetContentWindow, {
-      apply(target, thisArgument, argumentsList) {
-        const childWindow = Reflect.apply(target, thisArgument, argumentsList) as Window | null;
-        synchronizeChildNavigator(childWindow);
-        return childWindow;
-      }
+    const wrappedGetter = maskAsNative(wrapNative(nativeGetContentWindow, function apply(target, thisArgument, argumentsList) {
+      const childWindow = Reflect.apply(target, thisArgument, argumentsList) as Window | null;
+      synchronizeChildNavigator(childWindow);
+      return childWindow;
     }), nativeGetContentWindow);
     try {
       Object.defineProperty(prototype, "contentWindow", {
@@ -694,12 +690,10 @@ function patchIframeNavigatorAccess(): void {
   const contentDocumentDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentDocument");
   const nativeGetContentDocument = contentDocumentDescriptor?.get;
   if (contentDocumentDescriptor && nativeGetContentDocument) {
-    const wrappedGetter = maskAsNative(new Proxy(nativeGetContentDocument, {
-      apply(target, thisArgument, argumentsList) {
-        const childDocument = Reflect.apply(target, thisArgument, argumentsList) as Document | null;
-        synchronizeChildNavigator(childDocument?.defaultView ?? null);
-        return childDocument;
-      }
+    const wrappedGetter = maskAsNative(wrapNative(nativeGetContentDocument, function apply(target, thisArgument, argumentsList) {
+      const childDocument = Reflect.apply(target, thisArgument, argumentsList) as Document | null;
+      synchronizeChildNavigator(childDocument?.defaultView ?? null);
+      return childDocument;
     }), nativeGetContentDocument);
     try {
       Object.defineProperty(prototype, "contentDocument", {
@@ -783,7 +777,7 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
       };
       const getter = descriptor?.get
         ? nativeLookingGetter(descriptor.get, mirroredValue)
-        : mirroredValue;
+        : childGlobal.Object.getOwnPropertyDescriptor({ get [property]() { return mirroredValue(); } }, property)!.get;
       try {
         Object.defineProperty(owner, property, {
           configurable: true,
@@ -791,15 +785,7 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
           get: getter
         });
       } catch {
-        try {
-          Object.defineProperty(childNavigator, property, {
-            configurable: true,
-            enumerable: descriptor?.enumerable ?? true,
-            get: getter
-          });
-        } catch {
-          // Some child realms lock selected navigator fields.
-        }
+        // Leave locked child prototypes native rather than shadowing navigator.
       }
     }
     // Direct iframe access can precede all-frame injection. Install these in
@@ -857,12 +843,10 @@ function patchScreen(realm: Window & typeof globalThis): void {
     if (!descriptor || !nativeGetter) continue;
     realm.Object.defineProperty(prototype, property, {
       ...descriptor,
-      get: maskAsNative(new Proxy(nativeGetter, {
-        apply(target, receiver, args) {
-          const nativeValue = Reflect.apply(target, receiver, args);
-          if (property === "isExtended") return state.enabled ? false : nativeValue;
-          return reportedScreen()?.[property] ?? nativeValue;
-        }
+      get: maskAsNative(wrapNative(nativeGetter, function apply(target, receiver, args) {
+        const nativeValue = Reflect.apply(target, receiver, args);
+        if (property === "isExtended") return state.enabled ? false : nativeValue;
+        return reportedScreen()?.[property] ?? nativeValue;
       }), nativeGetter)
     });
   }
@@ -874,28 +858,24 @@ function patchScreen(realm: Window & typeof globalThis): void {
   const originalQueries = new WeakMap<object, string>();
   realm.Object.defineProperty(mediaPrototype, "media", {
     ...descriptor,
-    get: maskAsNative(new Proxy(nativeMedia, {
-      apply(target, receiver, args) {
-        const nativeValue = Reflect.apply(target, receiver, args);
-        return originalQueries.get(receiver) ?? nativeValue;
-      }
+    get: maskAsNative(wrapNative(nativeMedia, function apply(target, receiver, args) {
+      const nativeValue = Reflect.apply(target, receiver, args);
+      return originalQueries.get(receiver) ?? nativeValue;
     }), nativeMedia)
   });
-  defineMethod(realm, "matchMedia", maskAsNative(new Proxy(nativeMatchMedia, {
-    apply(target, receiver, args) {
-      const screen = reportedScreen();
-      if (!screen || !args.length || typeof args[0] === "symbol") return Reflect.apply(target, receiver, args);
-      const query = String(args[0]);
-      const rewritten = rewriteScreenMediaQuery(query, screen);
-      const result = Reflect.apply(target, receiver, [rewritten, ...args.slice(1)]) as MediaQueryList;
-      if (rewritten !== query) {
-        // Report the browser's own serialization of the page's query, not the
-        // raw string, so casing and whitespace normalise exactly as native.
-        const serialized = Reflect.apply(nativeMedia, Reflect.apply(target, receiver, [query, ...args.slice(1)]), []) as string;
-        originalQueries.set(result, serialized);
-      }
-      return result;
+  defineMethod(realm, "matchMedia", maskAsNative(wrapNative(nativeMatchMedia, function apply(target, receiver, args) {
+    const screen = reportedScreen();
+    if (!screen || !args.length || typeof args[0] === "symbol") return Reflect.apply(target, receiver, args);
+    const query = String(args[0]);
+    const rewritten = rewriteScreenMediaQuery(query, screen);
+    const result = Reflect.apply(target, receiver, [rewritten, ...args.slice(1)]) as MediaQueryList;
+    if (rewritten !== query) {
+      // Report the browser's own serialization of the page's query, not the
+      // raw string, so casing and whitespace normalise exactly as native.
+      const serialized = Reflect.apply(nativeMedia, Reflect.apply(target, receiver, [query, ...args.slice(1)]), []) as string;
+      originalQueries.set(result, serialized);
     }
+    return result;
   }), nativeMatchMedia));
 }
 
@@ -913,48 +893,40 @@ function patchMediaDevices(realm: Window & typeof globalThis): void {
     if (!descriptor || !nativeGetter) continue;
     realm.Object.defineProperty(devicePrototype, property, {
       ...descriptor,
-      get: maskAsNative(new Proxy(nativeGetter, {
-        apply(target, receiver, args) {
-          const kind = fakeDevices.get(receiver);
-          return kind ? (property === "kind" ? kind : "") : Reflect.apply(target, receiver, args);
-        }
+      get: maskAsNative(wrapNative(nativeGetter, function apply(target, receiver, args) {
+        const kind = fakeDevices.get(receiver);
+        return kind ? (property === "kind" ? kind : "") : Reflect.apply(target, receiver, args);
       }), nativeGetter)
     });
   }
   const nativeToJSON = devicePrototype.toJSON;
   if (typeof nativeToJSON === "function") {
-    defineMethod(devicePrototype, "toJSON", maskAsNative(new Proxy(nativeToJSON, {
-      apply(target, receiver, args) {
-        const kind = fakeDevices.get(receiver);
-        return kind ? realm.Object.assign(new realm.Object(), { deviceId: "", kind, label: "", groupId: "" })
-          : Reflect.apply(target, receiver, args);
-      }
+    defineMethod(devicePrototype, "toJSON", maskAsNative(wrapNative(nativeToJSON, function apply(target, receiver, args) {
+      const kind = fakeDevices.get(receiver);
+      return kind ? realm.Object.assign(new realm.Object(), { deviceId: "", kind, label: "", groupId: "" })
+        : Reflect.apply(target, receiver, args);
     }), nativeToJSON));
   }
   const nativeCapabilities = inputPrototype.getCapabilities;
   if (typeof nativeCapabilities === "function") {
-    defineMethod(inputPrototype, "getCapabilities", maskAsNative(new Proxy(nativeCapabilities, {
-      apply(target, receiver, args) {
-        const kind = fakeDevices.get(receiver);
-        return kind && kind !== "audiooutput" ? new realm.Object() : Reflect.apply(target, receiver, args);
-      }
+    defineMethod(inputPrototype, "getCapabilities", maskAsNative(wrapNative(nativeCapabilities, function apply(target, receiver, args) {
+      const kind = fakeDevices.get(receiver);
+      return kind && kind !== "audiooutput" ? new realm.Object() : Reflect.apply(target, receiver, args);
     }), nativeCapabilities));
   }
-  defineMethod(prototype, "enumerateDevices", maskAsNative(new Proxy(nativeEnumerate, {
-    apply(target, receiver, args) {
-      // Native validation and permission/policy failures must remain intact.
-      const promise = Reflect.apply(target, receiver, args) as Promise<MediaDeviceInfo[]>;
-      return promise.then((devices) => {
-        if (!state.enabled || devices.some((device) => device.label !== "" || device.deviceId !== "")) return devices;
-        return realm.Array.from(["audioinput", "videoinput", "audiooutput"] as const, (kind) => {
-          const nativeDevice = devices.find((device) => device.kind === kind);
-          if (nativeDevice) return nativeDevice;
-          const fake = realm.Object.create(kind === "audiooutput" ? devicePrototype : inputPrototype) as MediaDeviceInfo;
-          fakeDevices.set(fake, kind);
-          return fake;
-        });
+  defineMethod(prototype, "enumerateDevices", maskAsNative(wrapNative(nativeEnumerate, function apply(target, receiver, args) {
+    // Native validation and permission/policy failures must remain intact.
+    const promise = Reflect.apply(target, receiver, args) as Promise<MediaDeviceInfo[]>;
+    return promise.then((devices) => {
+      if (!state.enabled || devices.some((device) => device.label !== "" || device.deviceId !== "")) return devices;
+      return realm.Array.from(["audioinput", "videoinput", "audiooutput"] as const, (kind) => {
+        const nativeDevice = devices.find((device) => device.kind === kind);
+        if (nativeDevice) return nativeDevice;
+        const fake = realm.Object.create(kind === "audiooutput" ? devicePrototype : inputPrototype) as MediaDeviceInfo;
+        fakeDevices.set(fake, kind);
+        return fake;
       });
-    }
+    });
   }), nativeEnumerate));
 }
 
@@ -978,40 +950,36 @@ function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
     if (!descriptor || !nativeGetter) continue;
     realm.Object.defineProperty(voicePrototype, property, {
       ...descriptor,
-      get: maskAsNative(new Proxy(nativeGetter, {
-        apply(target, receiver, args) {
-          const voice = fakeVoices.get(receiver);
-          return voice ? voice[property] : Reflect.apply(target, receiver, args);
-        }
+      get: maskAsNative(wrapNative(nativeGetter, function apply(target, receiver, args) {
+        const voice = fakeVoices.get(receiver);
+        return voice ? voice[property] : Reflect.apply(target, receiver, args);
       }), nativeGetter)
     });
   }
-  defineMethod(synthPrototype, "getVoices", maskAsNative(new Proxy(nativeGetVoices, {
-    apply(target, receiver, args) {
-      const nativeVoices = Reflect.apply(target, receiver, args) as SpeechSynthesisVoice[];
-      if (!active()) return nativeVoices;
-      const descriptions = parentIdentity
-        ? parentIdentity.localVoices()
-        : voicesForProfile(state.profile, realm.navigator.platform);
-      if (!descriptions) return nativeVoices;
-      if (parentIdentity && sameJson(descriptions, nativeVoices.filter((voice) => voice.localService)
-        .map(({ name, lang, voiceURI, localService, default: isDefault }) => ({ name, lang, voiceURI, localService, default: isDefault })))) {
-        return nativeVoices;
-      }
-      const key = JSON.stringify(descriptions);
-      if (cache?.key !== key) {
-        const voices = descriptions.map((description) => {
-          const voice = realm.Object.create(voicePrototype) as SpeechSynthesisVoice;
-          fakeVoices.set(voice, description);
-          return voice;
-        });
-        cache = { key, voices };
-      }
-      // Local profile voices are available immediately, even on the first
-      // call. Keep native voiceschanged events untouched: they still announce
-      // the browser's asynchronous remote-voice loading; no synthetic events.
-      return realm.Array.from([...cache.voices, ...nativeVoices.filter((voice) => !voice.localService)]);
+  defineMethod(synthPrototype, "getVoices", maskAsNative(wrapNative(nativeGetVoices, function apply(target, receiver, args) {
+    const nativeVoices = Reflect.apply(target, receiver, args) as SpeechSynthesisVoice[];
+    if (!active()) return nativeVoices;
+    const descriptions = parentIdentity
+      ? parentIdentity.localVoices()
+      : voicesForProfile(state.profile, realm.navigator.platform);
+    if (!descriptions) return nativeVoices;
+    if (parentIdentity && sameJson(descriptions, nativeVoices.filter((voice) => voice.localService)
+      .map(({ name, lang, voiceURI, localService, default: isDefault }) => ({ name, lang, voiceURI, localService, default: isDefault })))) {
+      return nativeVoices;
     }
+    const key = JSON.stringify(descriptions);
+    if (cache?.key !== key) {
+      const voices = descriptions.map((description) => {
+        const voice = realm.Object.create(voicePrototype) as SpeechSynthesisVoice;
+        fakeVoices.set(voice, description);
+        return voice;
+      });
+      cache = { key, voices };
+    }
+    // Local profile voices are available immediately, even on the first
+    // call. Keep native voiceschanged events untouched: they still announce
+    // the browser's asynchronous remote-voice loading; no synthetic events.
+    return realm.Array.from([...cache.voices, ...nativeVoices.filter((voice) => !voice.localService)]);
   }), nativeGetVoices));
   const descriptor = realm.Object.getOwnPropertyDescriptor(utterancePrototype, "voice");
   const nativeGetter = descriptor?.get;
@@ -1019,27 +987,23 @@ function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
   if (!descriptor || !nativeGetter || !nativeSetter) return;
   realm.Object.defineProperty(utterancePrototype, "voice", {
     ...descriptor,
-    get: maskAsNative(new Proxy(nativeGetter, {
-      apply(target, receiver, args) {
-        const nativeVoice = Reflect.apply(target, receiver, args);
-        return active() ? assignedVoices.get(receiver) ?? nativeVoice : nativeVoice;
-      }
+    get: maskAsNative(wrapNative(nativeGetter, function apply(target, receiver, args) {
+      const nativeVoice = Reflect.apply(target, receiver, args);
+      return active() ? assignedVoices.get(receiver) ?? nativeVoice : nativeVoice;
     }), nativeGetter),
-    set: maskAsNative(new Proxy(nativeSetter, {
-      apply(target, receiver, args) {
-        const voice = args[0] as SpeechSynthesisVoice | null;
-        const description = voice && fakeVoices.get(voice);
-        if (description) {
-          const nativeVoices = Reflect.apply(nativeGetVoices, synth, []) as SpeechSynthesisVoice[];
-          const match = nativeVoices.find((candidate) => candidate.lang.toLowerCase() === description.lang.toLowerCase());
-          const result = Reflect.apply(target, receiver, [match ?? null]);
-          assignedVoices.set(receiver, voice);
-          return result;
-        }
-        const result = Reflect.apply(target, receiver, args);
-        assignedVoices.delete(receiver);
+    set: maskAsNative(wrapNative(nativeSetter, function apply(target, receiver, args) {
+      const voice = args[0] as SpeechSynthesisVoice | null;
+      const description = voice && fakeVoices.get(voice);
+      if (description) {
+        const nativeVoices = Reflect.apply(nativeGetVoices, synth, []) as SpeechSynthesisVoice[];
+        const match = nativeVoices.find((candidate) => candidate.lang.toLowerCase() === description.lang.toLowerCase());
+        const result = Reflect.apply(target, receiver, [match ?? null]);
+        assignedVoices.set(receiver, voice);
         return result;
       }
+      const result = Reflect.apply(target, receiver, args);
+      assignedVoices.delete(receiver);
+      return result;
     }), nativeSetter)
   });
 }
@@ -1067,11 +1031,9 @@ function patchKeyboard(realm: Window & typeof globalThis): void {
     const iteratorPrototype = realm.Object.getPrototypeOf(iterator) as { next: Function };
     if (!patchedIteratorPrototypes.has(iteratorPrototype)) {
       const nativeNext = iteratorPrototype.next;
-      defineMethod(iteratorPrototype, "next", maskAsNative(new Proxy(nativeNext, {
-        apply(target, iteratorReceiver, args) {
-          const fake = fakeIterators.get(iteratorReceiver);
-          return fake ? fake.next() : Reflect.apply(target, iteratorReceiver, args);
-        }
+      defineMethod(iteratorPrototype, "next", maskAsNative(wrapNative(nativeNext, function apply(target, iteratorReceiver, args) {
+        const fake = fakeIterators.get(iteratorReceiver);
+        return fake ? fake.next() : Reflect.apply(target, iteratorReceiver, args);
       }), nativeNext));
       patchedIteratorPrototypes.add(iteratorPrototype);
     }
@@ -1083,22 +1045,20 @@ function patchKeyboard(realm: Window & typeof globalThis): void {
   for (const property of ["get", "has", "entries", "keys", "values", "forEach", Symbol.iterator]) {
     const nativeMethod = realm.Object.getOwnPropertyDescriptor(prototype, property)?.value as Function | undefined;
     if (!nativeMethod) continue;
-    const wrapper = methodWrappers.get(nativeMethod) ?? maskAsNative(new Proxy(nativeMethod, {
-      apply(target, receiver, args) {
-        const map = fakeMaps.get(receiver);
-        if (!map) return Reflect.apply(target, receiver, args);
-        if (property === "get" || property === "has") {
-          // WebIDL maplike keys are required DOMStrings, not arbitrary Map keys.
-          if (!args.length || typeof args[0] === "symbol") throw new realm.TypeError("Invalid KeyboardLayoutMap key");
-          return map[property](String(args[0]));
-        }
-        if (property === "forEach") {
-          const callback = args[0] as Function;
-          if (typeof callback !== "function") throw new realm.TypeError("Callback must be a function");
-          return map.forEach((value, key) => Reflect.apply(callback, args[1], [value, key, receiver]));
-        }
-        return iteratorFor(target, receiver, map, property);
+    const wrapper = methodWrappers.get(nativeMethod) ?? maskAsNative(wrapNative(nativeMethod, function apply(target, receiver, args) {
+      const map = fakeMaps.get(receiver);
+      if (!map) return Reflect.apply(target, receiver, args);
+      if (property === "get" || property === "has") {
+        // WebIDL maplike keys are required DOMStrings, not arbitrary Map keys.
+        if (!args.length || typeof args[0] === "symbol") throw new realm.TypeError("Invalid KeyboardLayoutMap key");
+        return map[property](String(args[0]));
       }
+      if (property === "forEach") {
+        const callback = args[0] as Function;
+        if (typeof callback !== "function") throw new realm.TypeError("Callback must be a function");
+        return map.forEach((value, key) => Reflect.apply(callback, args[1], [value, key, receiver]));
+      }
+      return iteratorFor(target, receiver, map, property);
     }), nativeMethod);
     methodWrappers.set(nativeMethod, wrapper);
     defineMethod(prototype, property, wrapper);
@@ -1108,38 +1068,34 @@ function patchKeyboard(realm: Window & typeof globalThis): void {
   if (sizeDescriptor && nativeSize) {
     realm.Object.defineProperty(prototype, "size", {
       ...sizeDescriptor,
-      get: maskAsNative(new Proxy(nativeSize, {
-        apply(target, receiver, args) {
-          const map = fakeMaps.get(receiver);
-          return map ? map.size : Reflect.apply(target, receiver, args);
-        }
+      get: maskAsNative(wrapNative(nativeSize, function apply(target, receiver, args) {
+        const map = fakeMaps.get(receiver);
+        return map ? map.size : Reflect.apply(target, receiver, args);
       }), nativeSize)
     });
   }
-  defineMethod(keyboardPrototype, "getLayoutMap", maskAsNative(new Proxy(nativeGetLayoutMap, {
-    apply(target, receiver, args) {
-      // Always let Chromium enforce permissions policy and frame restrictions.
-      const promise = Reflect.apply(target, receiver, args) as Promise<object>;
-      return promise.then((nativeMap) => {
-        if (!state.enabled) return nativeMap;
-        const layout = new realm.Map(keyboardLayoutForProfile(state.profile));
-        const ordered = new realm.Map<string, string>();
-        // Blink iterates a HashMap, not the browser process's sorted map. Keep
-        // its observable order for shared codes; append profile-only codes in
-        // deterministic code order rather than guessing Blink's hash ordering.
-        const codes = Reflect.apply(nativeKeys, nativeMap, []) as Iterable<string>;
-        for (const code of codes) {
-          if (layout.has(code)) ordered.set(code, layout.get(code)!);
-        }
-        for (const [code, key] of layout) {
-          if (!ordered.has(code)) ordered.set(code, key);
-        }
-        const fakeMap = realm.Object.create(prototype) as object;
-        fakeMaps.set(fakeMap, ordered);
-        backingMaps.set(fakeMap, nativeMap);
-        return fakeMap;
-      });
-    }
+  defineMethod(keyboardPrototype, "getLayoutMap", maskAsNative(wrapNative(nativeGetLayoutMap, function apply(target, receiver, args) {
+    // Always let Chromium enforce permissions policy and frame restrictions.
+    const promise = Reflect.apply(target, receiver, args) as Promise<object>;
+    return promise.then((nativeMap) => {
+      if (!state.enabled) return nativeMap;
+      const layout = new realm.Map(keyboardLayoutForProfile(state.profile));
+      const ordered = new realm.Map<string, string>();
+      // Blink iterates a HashMap, not the browser process's sorted map. Keep
+      // its observable order for shared codes; append profile-only codes in
+      // deterministic code order rather than guessing Blink's hash ordering.
+      const codes = Reflect.apply(nativeKeys, nativeMap, []) as Iterable<string>;
+      for (const code of codes) {
+        if (layout.has(code)) ordered.set(code, layout.get(code)!);
+      }
+      for (const [code, key] of layout) {
+        if (!ordered.has(code)) ordered.set(code, key);
+      }
+      const fakeMap = realm.Object.create(prototype) as object;
+      fakeMaps.set(fakeMap, ordered);
+      backingMaps.set(fakeMap, nativeMap);
+      return fakeMap;
+    });
   }), nativeGetLayoutMap));
 }
 
@@ -1157,7 +1113,7 @@ function defineNavigatorGetter(property: string, getter: () => unknown): void {
   const descriptor = snapshot?.descriptor ?? Object.getOwnPropertyDescriptor(owner, property);
   const installedGetter = descriptor?.get
     ? nativeLookingGetter(descriptor.get, getter)
-    : getter;
+    : Object.getOwnPropertyDescriptor({ get [property]() { return getter(); } }, property)!.get;
   try {
     Object.defineProperty(owner, property, {
       configurable: true,
@@ -1165,26 +1121,16 @@ function defineNavigatorGetter(property: string, getter: () => unknown): void {
       get: installedGetter
     });
   } catch {
-    try {
-      Object.defineProperty(navigator, property, {
-        configurable: true,
-        enumerable: descriptor?.enumerable ?? true,
-        get: installedGetter
-      });
-    } catch {
-      // Some Chromium builds keep selected navigator fields locked.
-    }
+    // Leave locked prototype properties native; never shadow them on navigator.
   }
 }
 
 function nativeLookingGetter(nativeGetter: () => unknown, value: () => unknown): () => unknown {
-  return maskAsNative(new Proxy(nativeGetter, {
-    apply(target, thisArgument, argumentsList) {
-      // Preserve the native getter's receiver validation before substituting
-      // the configured value. Proxies stringify with a native-code surface.
-      Reflect.apply(target, thisArgument, argumentsList);
-      return value();
-    }
+  return maskAsNative(wrapNative(nativeGetter, function apply(target, thisArgument, argumentsList) {
+    // Preserve the native getter's receiver validation before substituting
+    // the configured value. Proxies stringify with a native-code surface.
+    Reflect.apply(target, thisArgument, argumentsList);
+    return value();
   }), nativeGetter);
 }
 
@@ -1215,7 +1161,9 @@ function hideNavigatorProperty(property: string): void {
       Object.defineProperty(owner, property, {
         configurable: true,
         enumerable: false,
-        get: () => undefined
+        get: snapshot?.descriptor.get
+          ? nativeLookingGetter(snapshot.descriptor.get, () => undefined)
+          : Object.getOwnPropertyDescriptor({ get [property]() { return undefined; } }, property)!.get
       });
     } catch {
       // Some Chromium builds keep selected navigator fields locked.
@@ -1235,14 +1183,14 @@ function mirroredUserAgentData(parentData: object): object {
     mobile: { value: low.mobile, enumerable: true },
     platform: { value: low.platform, enumerable: true },
     getHighEntropyValues: {
-      value: maskAsNative(async function getHighEntropyValues(hints: string[]) {
+      value: maskAsNative(wrapNativeMethod(nativeUaDataPrototype?.getHighEntropyValues, async function getHighEntropyValues(hints: string[]) {
         return cloneJson(await source.getHighEntropyValues(hints));
-      }, nativeUaDataPrototype?.getHighEntropyValues)
+      }), nativeUaDataPrototype?.getHighEntropyValues)
     },
     toJSON: {
-      value: maskAsNative(function toJSON() {
+      value: maskAsNative(wrapNativeMethod(nativeUaDataPrototype?.toJSON, { toJSON() {
         return cloneJson(low);
-      }, nativeUaDataPrototype?.toJSON)
+      } }.toJSON), nativeUaDataPrototype?.toJSON)
     }
   });
   return Object.freeze(value);
@@ -1266,7 +1214,7 @@ function buildUserAgentData(): object | undefined {
     mobile: { value: metadata.mobile, enumerable: true },
     platform: { value: metadata.platform, enumerable: true },
     getHighEntropyValues: {
-      value: maskAsNative(async function getHighEntropyValues(hints: string[]) {
+      value: maskAsNative(wrapNativeMethod(nativeUaDataPrototype?.getHighEntropyValues, async function getHighEntropyValues(hints: string[]) {
         const values: Record<string, unknown> = {
           brands: cloneJson(metadata.brands),
           mobile: metadata.mobile,
@@ -1278,16 +1226,16 @@ function buildUserAgentData(): object | undefined {
           }
         }
         return values;
-      }, nativeUaDataPrototype?.getHighEntropyValues)
+      }), nativeUaDataPrototype?.getHighEntropyValues)
     },
     toJSON: {
-      value: maskAsNative(function toJSON() {
+      value: maskAsNative(wrapNativeMethod(nativeUaDataPrototype?.toJSON, { toJSON() {
         return {
           brands: cloneJson(metadata.brands),
           mobile: metadata.mobile,
           platform: metadata.platform
         };
-      }, nativeUaDataPrototype?.toJSON)
+      } }.toJSON), nativeUaDataPrototype?.toJSON)
     }
   });
   Object.freeze(value);
@@ -1341,7 +1289,7 @@ function patchGeolocation(): void {
     Object.defineProperty(geolocation, name, {
       configurable: true,
       writable: true,
-      value: maskAsNative(geolocationMethods[name], nativeGeolocationPrototype?.[name])
+      value: maskAsNative(wrapNativeMethod(nativeGeolocationPrototype?.[name], geolocationMethods[name]), nativeGeolocationPrototype?.[name])
     });
   }
 
@@ -1369,10 +1317,8 @@ function patchFontFaceSet(): void {
     return nativeLoad.call(this, font, text);
   };
 
-  maskAsNative(patchedCheck, nativeCheck);
-  maskAsNative(patchedLoad, nativeLoad);
-  defineMethod(prototype, "check", patchedCheck);
-  defineMethod(prototype, "load", patchedLoad);
+  defineMethod(prototype, "check", maskAsNative(wrapNative(nativeCheck, (_target, receiver, args) => Reflect.apply(patchedCheck, receiver, args)), nativeCheck));
+  defineMethod(prototype, "load", maskAsNative(wrapNative(nativeLoad, (_target, receiver, args) => Reflect.apply(patchedLoad, receiver, args)), nativeLoad));
   if (fontSet) {
     defineMethod(fontSet, "check", patchedCheck);
     defineMethod(fontSet, "load", patchedLoad);
@@ -1380,6 +1326,12 @@ function patchFontFaceSet(): void {
 }
 
 function buildPosition(): GeolocationPosition {
+  const geolocationGlobal = window as unknown as {
+    GeolocationCoordinates?: { prototype: { toJSON?: Function } };
+    GeolocationPosition?: { prototype: { toJSON?: Function } };
+  };
+  const nativeCoordinatesToJSON = geolocationGlobal.GeolocationCoordinates?.prototype.toJSON;
+  const nativePositionToJSON = geolocationGlobal.GeolocationPosition?.prototype.toJSON;
   const jitterLat = stableNumber(`${state.seed}:geo:lat`, -0.00015, 0.00015);
   const jitterLon = stableNumber(`${state.seed}:geo:lon`, -0.00015, 0.00015);
   return {
@@ -1391,14 +1343,28 @@ function buildPosition(): GeolocationPosition {
       altitudeAccuracy: null,
       heading: null,
       speed: null,
-      toJSON() {
-        return this;
-      }
+      toJSON: maskAsNative(wrapNativeMethod(nativeCoordinatesToJSON, {
+        toJSON(this: GeolocationCoordinates) {
+          // Match geolocation_coordinates.cc::toJSON's observable key order,
+          // which differs from the attribute order in Chromium's IDL.
+          return {
+            accuracy: this.accuracy,
+            latitude: this.latitude,
+            longitude: this.longitude,
+            altitude: this.altitude,
+            altitudeAccuracy: this.altitudeAccuracy,
+            heading: this.heading,
+            speed: this.speed
+          };
+        }
+      }.toJSON), nativeCoordinatesToJSON)
     },
     timestamp: NativeDate.now(),
-    toJSON() {
-      return this;
-    }
+    toJSON: maskAsNative(wrapNativeMethod(nativePositionToJSON, {
+      toJSON(this: GeolocationPosition) {
+        return { timestamp: this.timestamp, coords: this.coords.toJSON() };
+      }
+    }.toJSON), nativePositionToJSON)
   };
 }
 
@@ -1408,13 +1374,15 @@ function patchCanvas(): void {
     const nativeMeasureText = contextPrototype.measureText;
     Object.defineProperty(contextPrototype, "measureText", {
       configurable: true,
-      value: function measureText(this: CanvasRenderingContext2D, text: string) {
+      value: maskAsNative(wrapNative(nativeMeasureText, (target, receiver, args) => {
+        const context = receiver as CanvasRenderingContext2D;
+        const [text] = args as [string];
         if (!state.enabled) {
-          return nativeMeasureText.call(this, text);
+          return Reflect.apply(target, receiver, args);
         }
-        const font = this.font;
+        const font = context.font;
         const sanitizedFont = sanitizeCanvasFont(font, state.profile, currentDocumentFontFamilies());
-        const metrics = sanitizedFont === font ? nativeMeasureText.call(this, text) : measureTextWithFont(this, nativeMeasureText, text, sanitizedFont);
+        const metrics = sanitizedFont === font ? Reflect.apply(target, receiver, args) : measureTextWithFont(context, nativeMeasureText, text, sanitizedFont);
         if (!state.canvasMeasureTextSpoofingEnabled) {
           // Helium owns measureText noise in this mode; Ghost must not add its own Proxy noise.
           return metrics;
@@ -1432,9 +1400,8 @@ function patchCanvas(): void {
             return value;
           }
         });
-      }
+      }), nativeMeasureText)
     });
-    maskAsNative(contextPrototype.measureText, nativeMeasureText);
   }
 }
 
@@ -1476,38 +1443,36 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
   Object.defineProperty(prototype, "getParameter", {
     configurable: true,
     writable: true,
-    value: maskAsNative(new Proxy(nativeGetParameter, {
-      apply(target, thisArgument, argumentsList) {
-        let parameter = argumentsList[0];
-        if (parameter !== null && (typeof parameter === "object" || typeof parameter === "function")) {
-          const originalParameter = parameter;
-          // Let the native binding drive coercion, retaining its receiver/error
-          // checks and the original conversion methods' `this`. Record their
-          // result rather than coercing the caller's object a second time.
-          argumentsList[0] = new Proxy({}, {
-            get(_target, key) {
-              const value = Reflect.get(originalParameter, key);
-              return typeof value === "function"
-                ? (...args: unknown[]) => (parameter = Reflect.apply(value, originalParameter, args))
-                : value;
-            }
-          });
-        }
-        // Preserve the native query, receiver checks and null/error results.
-        // Only replace valid unmasked identity strings; all other parameters,
-        // extension availability and pixel output remain native.
-        const nativeValue = Reflect.apply(target, thisArgument, argumentsList);
-        if (state.webglInfoSpoofingEnabled && typeof nativeValue === "string") {
-          parameter = +parameter >>> 0; // GLenum is an unsigned Web IDL long.
-          if (parameter === 0x9245) {
-            return parentIdentity ? parentIdentity.webglInfo().vendor : state.profile.webglVendor;
+    value: maskAsNative(wrapNative(nativeGetParameter, function apply(target, thisArgument, argumentsList) {
+      let parameter = argumentsList[0];
+      if (parameter !== null && (typeof parameter === "object" || typeof parameter === "function")) {
+        const originalParameter = parameter;
+        // Let the native binding drive coercion, retaining its receiver/error
+        // checks and the original conversion methods' `this`. Record their
+        // result rather than coercing the caller's object a second time.
+        argumentsList[0] = new Proxy({}, {
+          get(_target, key) {
+            const value = Reflect.get(originalParameter, key);
+            return typeof value === "function"
+              ? (...args: unknown[]) => (parameter = Reflect.apply(value, originalParameter, args))
+              : value;
           }
-          if (parameter === 0x9246) {
-            return parentIdentity ? parentIdentity.webglInfo().renderer : state.profile.webglRenderer;
-          }
-        }
-        return nativeValue;
+        });
       }
+      // Preserve the native query, receiver checks and null/error results.
+      // Only replace valid unmasked identity strings; all other parameters,
+      // extension availability and pixel output remain native.
+      const nativeValue = Reflect.apply(target, thisArgument, argumentsList);
+      if (state.webglInfoSpoofingEnabled && typeof nativeValue === "string") {
+        parameter = +parameter >>> 0; // GLenum is an unsigned Web IDL long.
+        if (parameter === 0x9245) {
+          return parentIdentity ? parentIdentity.webglInfo().vendor : state.profile.webglVendor;
+        }
+        if (parameter === 0x9246) {
+          return parentIdentity ? parentIdentity.webglInfo().renderer : state.profile.webglRenderer;
+        }
+      }
+      return nativeValue;
     }), nativeGetParameter)
   });
 }
@@ -1590,10 +1555,8 @@ function patchWebGPU(realm: Window & typeof globalThis): void {
 }
 
 function nativeMappingGetter(nativeGetter: () => unknown, map: (nativeValue: unknown) => unknown): () => unknown {
-  return maskAsNative(new Proxy(nativeGetter, {
-    apply(target, thisArgument, argumentsList) {
-      return map(Reflect.apply(target, thisArgument, argumentsList));
-    }
+  return maskAsNative(wrapNative(nativeGetter, function apply(target, thisArgument, argumentsList) {
+    return map(Reflect.apply(target, thisArgument, argumentsList));
   }), nativeGetter);
 }
 
@@ -1656,25 +1619,21 @@ function patchWorkers(): void {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
       writable: true,
-      value: maskAsNative(new Proxy(nativeCreateObjectURL, {
-        apply(target, thisArgument, argumentsList) {
-          const url = Reflect.apply(target, thisArgument, argumentsList) as string;
-          const source = argumentsList[0];
-          if (source instanceof NativeBlob && blobRegistry.size < 512) {
-            blobRegistry.set(url, source);
-          }
-          return url;
+      value: maskAsNative(wrapNative(nativeCreateObjectURL, function apply(target, thisArgument, argumentsList) {
+        const url = Reflect.apply(target, thisArgument, argumentsList) as string;
+        const source = argumentsList[0];
+        if (source instanceof NativeBlob && blobRegistry.size < 512) {
+          blobRegistry.set(url, source);
         }
+        return url;
       }), nativeCreateObjectURL)
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
       writable: true,
-      value: maskAsNative(new Proxy(nativeRevokeObjectURL, {
-        apply(target, thisArgument, argumentsList) {
-          blobRegistry.delete(String(argumentsList[0]));
-          return Reflect.apply(target, thisArgument, argumentsList);
-        }
+      value: maskAsNative(wrapNative(nativeRevokeObjectURL, function apply(target, thisArgument, argumentsList) {
+        blobRegistry.delete(String(argumentsList[0]));
+        return Reflect.apply(target, thisArgument, argumentsList);
       }), nativeRevokeObjectURL)
     });
   } catch {

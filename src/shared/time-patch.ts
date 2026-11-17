@@ -1,3 +1,4 @@
+import { wrapNative } from "./native-wrapper";
 import { constructDateWithNewTarget } from "./date-constructor";
 import {
   dateFromZonedLocalParts,
@@ -40,7 +41,6 @@ export function installTimePatches(context: TimePatchContext): void {
 }
 
 function patchIntl(context: TimePatchContext): void {
-  const { maskAsNative } = context;
   patchIntlConstructor(context, "DateTimeFormat", "timeZone");
   patchIntlConstructor(context, "NumberFormat");
   patchIntlConstructor(context, "Collator");
@@ -58,7 +58,8 @@ function patchIntlConstructor(context: TimePatchContext, name: keyof typeof Nati
     return;
   }
 
-  const Wrapped = function IntlWrapper(this: object, locales?: unknown, options?: Record<string, unknown>) {
+  function createInstance(args: unknown[], receiver: unknown, newTarget?: Function): object {
+    const [locales, options] = args as [unknown, Record<string, unknown> | undefined];
     const metadata: IntlInstanceMetadata = {};
     const shouldDefaultLocale = context.enabled() && locales === undefined;
     const nextLocales = shouldDefaultLocale ? context.intlLocale() : locales;
@@ -70,32 +71,32 @@ function patchIntlConstructor(context: TimePatchContext, name: keyof typeof Nati
     if (shouldDefaultLocale) {
       metadata.locale = context.intlLocale();
     }
-    const instance = Reflect.construct(NativeConstructor, [nextLocales, nextOptions], new.target || NativeConstructor);
+    const instance = newTarget
+      ? Reflect.construct(NativeConstructor, [nextLocales, nextOptions], newTarget)
+      : Reflect.apply(NativeConstructor, receiver, [nextLocales, nextOptions]) as object;
     if (metadata.locale || metadata.timeZone) {
       intlInstanceMetadata.set(instance, metadata);
     }
     return instance;
-  };
-
-  Object.setPrototypeOf(Wrapped, NativeConstructor);
-  Wrapped.prototype = NativeConstructor.prototype;
-  maskAsNative(Wrapped, NativeConstructor);
-
-  const nativeSupportedLocalesOf = (NativeConstructor as unknown as { supportedLocalesOf?: (...args: unknown[]) => unknown }).supportedLocalesOf;
-  if (nativeSupportedLocalesOf) {
-    Object.defineProperty(Wrapped, "supportedLocalesOf", {
-      configurable: true,
-      value: maskAsNative((...args: unknown[]) => nativeSupportedLocalesOf.apply(NativeConstructor, args), nativeSupportedLocalesOf)
-    });
   }
+
+  const Wrapped = maskAsNative(wrapNative(NativeConstructor,
+    (_target, receiver, args) => createInstance(args, receiver),
+    (_target, args, newTarget) => createInstance(args, undefined, newTarget)
+  ), NativeConstructor);
+  // The proxy shares the native prototype; keep the public constructor identity.
+  Object.defineProperty(NativeConstructor.prototype, "constructor", {
+    ...Object.getOwnPropertyDescriptor(NativeConstructor.prototype, "constructor"),
+    value: Wrapped
+  });
 
   const nativeResolvedOptions = (NativeConstructor.prototype as { resolvedOptions?: () => Record<string, unknown> }).resolvedOptions;
   if (nativeResolvedOptions) {
     Object.defineProperty(NativeConstructor.prototype, "resolvedOptions", {
       configurable: true,
-      value: maskAsNative(function resolvedOptions(this: object) {
-        const result = nativeResolvedOptions.call(this);
-        const metadata = intlInstanceMetadata.get(this);
+      value: maskAsNative(wrapNative(nativeResolvedOptions, (target, receiver, args) => {
+        const result = Reflect.apply(target, receiver, args) as Record<string, unknown>;
+        const metadata = intlInstanceMetadata.get(receiver);
         if (context.enabled() && metadata?.locale) {
           result.locale = metadata.locale;
         }
@@ -103,7 +104,7 @@ function patchIntlConstructor(context: TimePatchContext, name: keyof typeof Nati
           result.timeZone = metadata.timeZone;
         }
         return result;
-      }, nativeResolvedOptions)
+      }), nativeResolvedOptions)
     });
   }
 
@@ -242,22 +243,21 @@ function patchDate(context: TimePatchContext): void {
     toLocaleTimeString: nativeToLocaleTimeString
   };
   for (const [name, native] of Object.entries(nativeDateMethods)) {
-    maskAsNative((NativeDate.prototype as unknown as Record<string, unknown>)[name], native);
+    const implementation = (NativeDate.prototype as unknown as Record<string, Function>)[name];
+    if (typeof native === "function") {
+      Object.defineProperty(NativeDate.prototype, name, {
+        value: maskAsNative(wrapNative(native, (_target, receiver, args) => Reflect.apply(implementation, receiver, args)), native)
+      });
+    }
   }
 
-  function GhostDate(this: Date, ...args: unknown[]): string | Date {
-    if (!new.target) {
-      return new NativeDate().toString();
-    }
-    return constructDate(context, args, new.target);
-  }
-  Object.setPrototypeOf(GhostDate, NativeDate);
-  GhostDate.prototype = NativeDate.prototype;
-  maskAsNative(GhostDate, NativeDate);
-  Object.defineProperties(GhostDate, {
-    now: { value: maskAsNative(NativeDate.now.bind(NativeDate), NativeDate.now) },
-    parse: { value: maskAsNative(NativeDate.parse.bind(NativeDate), NativeDate.parse) },
-    UTC: { value: maskAsNative(NativeDate.UTC.bind(NativeDate), NativeDate.UTC) }
+  const GhostDate = maskAsNative(wrapNative(NativeDate,
+    () => new NativeDate().toString(),
+    (_target, args, newTarget) => constructDate(context, args, newTarget)
+  ), NativeDate);
+  Object.defineProperty(NativeDate.prototype, "constructor", {
+    ...Object.getOwnPropertyDescriptor(NativeDate.prototype, "constructor"),
+    value: GhostDate
   });
   Object.defineProperty(globalThis, "Date", {
     configurable: true,

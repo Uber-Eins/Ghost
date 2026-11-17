@@ -5,6 +5,11 @@ import vm from "node:vm";
 import ts from "typescript";
 import { PRESET_PROFILES, WEBGL_SPOOF_PRESETS, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl } from "../dist/test/test-api.js";
 
+const nativeWrapperCode = ts.transpileModule(
+  readFileSync(new URL("../src/shared/native-wrapper.ts", import.meta.url), "utf8").replaceAll("export ", ""),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+).outputText;
+
 const emptyInfo = { vendor: "", architecture: "", device: "", description: "" };
 const expectedPresets = [
   ["", ""], ["amd", "gcn-2"], ["apple", "metal-3"], ["intel", "gen-9"],
@@ -100,7 +105,7 @@ function harness() {
       vendor: Object.getOwnPropertyDescriptor(GPUAdapterInfo.prototype, 'vendor').get,
       webgl: WebGLRenderingContext.prototype.getParameter };
   `);
-  run(patchCode);
+  run(nativeWrapperCode + patchCode);
   run("patchFunctionToString()");
   return { context, run, json: (text) => JSON.parse(run(`JSON.stringify(${text})`)) };
 }

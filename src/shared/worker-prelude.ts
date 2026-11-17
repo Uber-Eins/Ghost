@@ -1,3 +1,4 @@
+import { wrapNative, wrapNativeMethod } from "./native-wrapper";
 import { appVersionForProfile, navigatorPlatformForProfile, userAgentForProfile, userAgentMetadataForProfile } from "./profiles";
 import type { WebgpuAdapterInfo } from "./profiles";
 import type { Profile } from "./types";
@@ -40,13 +41,14 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
   return [
     "(function(){",
     "var sources=new WeakMap(),nativeToString=Function.prototype.toString;",
+    `var wrapNative=${wrapNative.toString()},wrapNativeMethod=${wrapNativeMethod.toString()};`,
     "function mask(wrapper,native){sources.set(wrapper,native);return wrapper;}",
-    "try{Object.defineProperty(Function.prototype,\"toString\",{configurable:true,writable:true,value:mask(function toString(){var native=sources.get(this);return nativeToString.call(native||this);},nativeToString)});}catch(error){}",
+    "try{Object.defineProperty(Function.prototype,\"toString\",{configurable:true,writable:true,value:mask(wrapNative(nativeToString,function(target,receiver,args){return Reflect.apply(target,sources.get(receiver)||receiver,args);}),nativeToString)});}catch(error){}",
     workerNavigatorPrelude(identity),
     // Same Date/Intl rewriting as the page; reads `identity` and `mask` above.
     `try{${__GHOST_WORKER_TIME_PATCH__}}catch(error){}`,
     options.webglInfoSpoofingEnabled ? workerWebGLPrelude(profile) : "",
-    `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(function(){nativeGetter.call(this);return info[key];},nativeGetter)});}catch(error){}});}`,
+    `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(wrapNative(nativeGetter,function(target,receiver,args){Reflect.apply(target,receiver,args);return info[key];}),nativeGetter)});}catch(error){}});}`,
     "})();"
   ].join("");
 }
@@ -58,7 +60,7 @@ function workerNavigatorPrelude(identity: object): string {
     `var identity=${JSON.stringify(identity)},nav=self.navigator,navProto=nav&&Object.getPrototypeOf(nav);`,
     "if(navProto){",
     "var defineNav=function(key,read){var descriptor=Object.getOwnPropertyDescriptor(navProto,key),nativeGetter=descriptor&&descriptor.get;try{",
-    "Object.defineProperty(navProto,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:nativeGetter?mask(new Proxy(nativeGetter,{apply:function(target,receiver,args){Reflect.apply(target,receiver,args);return read();}}),nativeGetter):read});",
+    "Object.defineProperty(navProto,key,{configurable:true,enumerable:descriptor?descriptor.enumerable:true,get:nativeGetter?mask(wrapNative(nativeGetter,function(target,receiver,args){Reflect.apply(target,receiver,args);return read();}),nativeGetter):Object.getOwnPropertyDescriptor({get [key](){return read();}},key).get});",
     "}catch(error){}};",
     "var languages=Object.freeze(identity.languages),nativeGpc=!!nav.globalPrivacyControl;",
     "defineNav(\"language\",function(){return identity.language;});",
@@ -77,8 +79,8 @@ function workerNavigatorPrelude(identity: object): string {
     "brands:{value:Object.freeze(metadata.brands.map(function(brand){return Object.freeze(clone(brand));})),enumerable:true},",
     "mobile:{value:metadata.mobile,enumerable:true},",
     "platform:{value:metadata.platform,enumerable:true},",
-    "getHighEntropyValues:{value:mask(async function getHighEntropyValues(hints){var values=lowEntropy();for(var hint of hints){if(hint in metadata)values[hint]=clone(metadata[hint]);}return values;},uaProto&&uaProto.getHighEntropyValues)},",
-    "toJSON:{value:mask(function toJSON(){return lowEntropy();},uaProto&&uaProto.toJSON)}",
+    "getHighEntropyValues:{value:mask(wrapNativeMethod(uaProto&&uaProto.getHighEntropyValues,async function getHighEntropyValues(hints){var values=lowEntropy();for(var hint of hints){if(hint in metadata)values[hint]=clone(metadata[hint]);}return values;}),uaProto&&uaProto.getHighEntropyValues)},",
+    "toJSON:{value:mask(wrapNativeMethod(uaProto&&uaProto.toJSON,{toJSON(){return lowEntropy();}}.toJSON),uaProto&&uaProto.toJSON)}",
     "});Object.freeze(uaData);defineNav(\"userAgentData\",function(){return uaData;});",
     "}}}"
   ].join("");
