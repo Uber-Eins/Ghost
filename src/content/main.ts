@@ -33,6 +33,20 @@ interface GhostController {
   readonly installed: true;
 }
 
+// What a same-origin parent Ghost realm reports, read through its public
+// surfaces so the parent never has to expose its settings or canvas seed.
+interface ParentIdentity {
+  profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
+  globalPrivacyControl: boolean;
+  userAgent: {
+    platform: unknown;
+    vendor: unknown;
+    userAgent: unknown;
+    appVersion: unknown;
+    userAgentData: object | undefined;
+  } | null;
+}
+
 interface NavigatorDescriptorSnapshot {
   owner: object;
   descriptor: PropertyDescriptor;
@@ -67,17 +81,24 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
 ]);
 const nativeNavigator = snapshotNavigator();
 const nativeGeolocation = navigator.geolocation;
+// A related about:blank/srcdoc frame or popup has no bootstrap settings. When
+// the page that created it runs Ghost, report what that page reports instead
+// of the fallback profile.
+const parentIdentity = __GHOST_RELATED_ONLY__ ? readParentIdentity() : null;
 const initialPageUrl = currentGhostPageUrl();
 const initialTopLevelUrl = currentTopLevelGhostPageUrl(initialPageUrl);
 const fallbackSiteKey = siteKeyFromUrl(initialTopLevelUrl);
 const bootstrapProfile = pendingBootstrap
   ? resolveBootstrapPayload(pendingBootstrap, initialPageUrl, initialTopLevelUrl)
   : null;
-const fallbackProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
+const baseProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
+const fallbackProfile: Profile = parentIdentity ? { ...baseProfile, ...parentIdentity.profile } : baseProfile;
 const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
 const initialGlobalPrivacyControlEnabled = bootstrapProfile?.globalPrivacyControlEnabled
+  ?? parentIdentity?.globalPrivacyControl
   ?? DEFAULT_SETTINGS.globalPrivacyControlEnabled;
-const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled ?? initialEnabled;
+const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled
+  ?? (parentIdentity ? parentIdentity.userAgent !== null : initialEnabled);
 const initialCanvasMeasureTextSpoofingEnabled = bootstrapProfile?.canvasMeasureTextSpoofingEnabled ?? initialEnabled;
 const initialWebglInfoSpoofingEnabled = bootstrapProfile?.webglInfoSpoofingEnabled ?? initialEnabled;
 const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
@@ -127,7 +148,11 @@ Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
 
 if (initialPageUrl) {
   install();
-  connectBridge();
+  // A frame mirroring its parent stays with the parent's identity; a later
+  // resolved profile could only disagree with it or reload the frame.
+  if (!parentIdentity) {
+    connectBridge();
+  }
 }
 
 function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
@@ -454,6 +479,46 @@ function snapshotNavigator(): Record<string, unknown> {
   };
 }
 
+function readParentIdentity(): ParentIdentity | null {
+  for (const candidate of [window.parent, window.opener as Window | null]) {
+    try {
+      if (!candidate || candidate === window || !(candidate as unknown as typeof ghostGlobal).__GHOST_PAGE_CONTROLLER__) {
+        continue;
+      }
+      const parentGlobal = candidate as Window & typeof globalThis;
+      const nav = parentGlobal.navigator as unknown as Record<string, unknown>;
+      const options = new parentGlobal.Intl.DateTimeFormat().resolvedOptions();
+      const userAgentData = "userAgentData" in nav ? nav.userAgentData as object | undefined : undefined;
+      const userAgent = {
+        platform: nav.platform,
+        vendor: nav.vendor,
+        userAgent: nav.userAgent,
+        appVersion: nav.appVersion,
+        userAgentData
+      };
+      // Same browser, so a parent reporting this frame's native values does
+      // not own them and the frame can leave them native.
+      const userAgentOwned = (["platform", "vendor", "userAgent", "appVersion"] as const)
+        .some((property) => userAgent[property] !== nativeNavigator[property])
+        || JSON.stringify(userAgentData ?? null) !== JSON.stringify(nativeNavigator.userAgentData ?? null);
+      return {
+        profile: {
+          locale: String(nav.language),
+          languages: Array.from(nav.languages as ArrayLike<string>, String),
+          deviceMemory: nav.deviceMemory as number,
+          timezoneId: options.timeZone,
+          intlLocale: options.locale
+        },
+        globalPrivacyControl: Boolean(nav.globalPrivacyControl),
+        userAgent: userAgentOwned ? userAgent : null
+      };
+    } catch {
+      // Cross-origin or detached parents cannot be read.
+    }
+  }
+  return null;
+}
+
 function snapshotNavigatorDescriptors(properties: string[]): Map<string, NavigatorDescriptorSnapshot> {
   const descriptors = new Map<string, NavigatorDescriptorSnapshot>();
   for (const property of properties) {
@@ -527,7 +592,20 @@ function patchNavigator(): void {
   defineNavigatorGetter("language", () => state.enabled ? state.profile.locale : readNativeNavigatorProperty("language"));
   defineNavigatorGetter("languages", () => state.enabled ? profileLanguages() : readNativeNavigatorProperty("languages"));
   defineNavigatorGetter("deviceMemory", () => state.enabled ? state.profile.deviceMemory : readNativeNavigatorProperty("deviceMemory"));
-  if (installedSurfaceOwnership.userAgent) {
+  const parentUserAgent = parentIdentity?.userAgent;
+  if (parentUserAgent) {
+    defineNavigatorGetter("platform", () => parentUserAgent.platform);
+    defineNavigatorGetter("vendor", () => parentUserAgent.vendor);
+    defineNavigatorGetter("userAgent", () => parentUserAgent.userAgent);
+    defineNavigatorGetter("appVersion", () => parentUserAgent.appVersion);
+    const parentData = parentUserAgent.userAgentData;
+    if (parentData) {
+      const mirrored = mirroredUserAgentData(parentData);
+      defineNavigatorGetter("userAgentData", () => mirrored);
+    } else {
+      hideNavigatorProperty("userAgentData");
+    }
+  } else if (installedSurfaceOwnership.userAgent) {
     defineNavigatorGetter("platform", () => navigatorPlatformForProfile(state.profile, spoofingBaseUserAgentString()));
     defineNavigatorGetter("vendor", () => navigatorVendorForProfile(state.profile, spoofingBaseUserAgentString()));
     defineNavigatorGetter("userAgent", () => userAgentForProfile(state.profile, spoofingBaseUserAgentString()));
@@ -603,9 +681,10 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
     }
 
     let languagesCache: { key: string; value: readonly string[] } | null = null;
-    // User-Agent surfaces are mirrored even when Ghost does not own them: the
-    // child's own related-frame install has no bootstrap settings and may
-    // have spoofed them with the fallback profile.
+    // User-Agent surfaces are checked even when Ghost does not own them: a
+    // child install that could not read this page falls back to the default
+    // profile. Values the child already reports are left to the child, which
+    // keeps objects such as userAgentData in the child's own realm.
     const properties = [
       "language",
       "languages",
@@ -628,6 +707,9 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
             // Ignore a locked child-realm descriptor.
           }
         }
+        continue;
+      }
+      if (sameJson((childNavigator as unknown as Record<string, unknown>)[property], mainNavigator[property])) {
         continue;
       }
 
@@ -753,6 +835,31 @@ function hideNavigatorProperty(property: string): void {
       // Some Chromium builds keep selected navigator fields locked.
     }
   }
+}
+
+// A copy of the parent's userAgentData built in this realm, so that it is an
+// instance of this frame's NavigatorUAData like the native one would be.
+function mirroredUserAgentData(parentData: object): object {
+  const source = parentData as { toJSON(): unknown; getHighEntropyValues(hints: string[]): Promise<unknown> };
+  const low = cloneJson(source.toJSON()) as { brands: Array<Record<string, unknown>>; mobile: boolean; platform: string };
+  const nativeUaDataPrototype = (window as unknown as { NavigatorUAData?: { prototype: Record<string, unknown> } }).NavigatorUAData?.prototype;
+  const value = Object.create(nativeUaDataPrototype ?? Object.prototype) as Record<string, unknown>;
+  Object.defineProperties(value, {
+    brands: { value: Object.freeze(low.brands.map((brand) => Object.freeze({ ...brand }))), enumerable: true },
+    mobile: { value: low.mobile, enumerable: true },
+    platform: { value: low.platform, enumerable: true },
+    getHighEntropyValues: {
+      value: maskAsNative(async function getHighEntropyValues(hints: string[]) {
+        return cloneJson(await source.getHighEntropyValues(hints));
+      }, nativeUaDataPrototype?.getHighEntropyValues)
+    },
+    toJSON: {
+      value: maskAsNative(function toJSON() {
+        return cloneJson(low);
+      }, nativeUaDataPrototype?.toJSON)
+    }
+  });
+  return Object.freeze(value);
 }
 
 function buildUserAgentData(): object | undefined {
@@ -1229,6 +1336,14 @@ function quantizeMetric(value: number): string {
     return String(value);
   }
   return value.toFixed(4);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 function cloneJson<T>(value: T): T {
