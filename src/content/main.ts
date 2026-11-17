@@ -6,7 +6,7 @@ import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts"
 import { strictModeForBlobParts } from "../shared/worker-blob";
 import { workerIdentityPrelude as buildWorkerIdentityPrelude } from "../shared/worker-prelude";
 import { isSupportedPageUrl } from "../shared/internal";
-import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "../shared/profiles";
+import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import { installTimePatches } from "../shared/time-patch";
 import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../shared/storage";
@@ -44,6 +44,7 @@ interface ParentIdentity {
   globalPrivacyControl: boolean;
   localVoices: () => ProfileVoice[] | null;
   screen: () => ProfileScreen | null;
+  webglInfo: () => { vendor: string; renderer: string };
   userAgent: {
     platform: unknown;
     vendor: unknown;
@@ -147,6 +148,10 @@ const synchronizedChildNavigators = new WeakSet<object>();
 const patchedSpeechRealms = new WeakSet<object>();
 const patchedKeyboardRealms = new WeakSet<object>();
 const patchedScreenRealms = new WeakSet<object>();
+const patchedMediaRealms = new WeakSet<object>();
+const patchedWebglRealms = new WeakSet<object>();
+const patchedWebgpuRealms = new WeakSet<object>();
+const webgpuInfoReaders = new WeakMap<object, () => WebgpuAdapterInfo>();
 let refreshScreenProfile: (() => void) | null = null;
 
 Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
@@ -229,6 +234,7 @@ function install(): void {
   patchSpeechSynthesis(window);
   patchKeyboard(window);
   patchScreen(window);
+  patchMediaDevices(window);
   patchIframeNavigatorAccess();
   installTimePatches({
     enabled: () => state.enabled,
@@ -241,8 +247,8 @@ function install(): void {
   patchCanvas();
   if (installedSurfaceOwnership.webglInfo) {
     patchWebGL();
-    patchWebGPU();
   }
+  patchWebGPU(window);
   patchWorkers();
 }
 
@@ -545,6 +551,7 @@ function readParentIdentity(): ParentIdentity | null {
             return null;
           }
         },
+        webglInfo: lazyWebglInfoReader(parentGlobal),
         screen: () => {
           try {
             const { width, height, availWidth, availHeight, availLeft, availTop } = parentGlobal.screen as Screen & ProfileScreen;
@@ -808,6 +815,9 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
       patchSpeechSynthesis(childGlobal);
       patchKeyboard(childGlobal);
       patchScreen(childGlobal);
+      patchMediaDevices(childGlobal);
+      if (installedSurfaceOwnership.webglInfo) patchWebGL(childGlobal);
+      patchWebGPU(childGlobal);
     }
     synchronizedChildNavigators.add(childNavigator);
   } catch {
@@ -887,6 +897,65 @@ function patchScreen(realm: Window & typeof globalThis): void {
       return result;
     }
   }), nativeMatchMedia));
+}
+
+function patchMediaDevices(realm: Window & typeof globalThis): void {
+  const prototype = realm.MediaDevices?.prototype;
+  const devicePrototype = realm.MediaDeviceInfo?.prototype;
+  const inputPrototype = realm.InputDeviceInfo?.prototype;
+  const nativeEnumerate = prototype?.enumerateDevices;
+  if (!nativeEnumerate || !devicePrototype || !inputPrototype || patchedMediaRealms.has(realm)) return;
+  patchedMediaRealms.add(realm);
+  const fakeDevices = new WeakMap<object, MediaDeviceKind>();
+  for (const property of ["deviceId", "kind", "label", "groupId"] as const) {
+    const descriptor = realm.Object.getOwnPropertyDescriptor(devicePrototype, property);
+    const nativeGetter = descriptor?.get;
+    if (!descriptor || !nativeGetter) continue;
+    realm.Object.defineProperty(devicePrototype, property, {
+      ...descriptor,
+      get: maskAsNative(new Proxy(nativeGetter, {
+        apply(target, receiver, args) {
+          const kind = fakeDevices.get(receiver);
+          return kind ? (property === "kind" ? kind : "") : Reflect.apply(target, receiver, args);
+        }
+      }), nativeGetter)
+    });
+  }
+  const nativeToJSON = devicePrototype.toJSON;
+  if (typeof nativeToJSON === "function") {
+    defineMethod(devicePrototype, "toJSON", maskAsNative(new Proxy(nativeToJSON, {
+      apply(target, receiver, args) {
+        const kind = fakeDevices.get(receiver);
+        return kind ? realm.Object.assign(new realm.Object(), { deviceId: "", kind, label: "", groupId: "" })
+          : Reflect.apply(target, receiver, args);
+      }
+    }), nativeToJSON));
+  }
+  const nativeCapabilities = inputPrototype.getCapabilities;
+  if (typeof nativeCapabilities === "function") {
+    defineMethod(inputPrototype, "getCapabilities", maskAsNative(new Proxy(nativeCapabilities, {
+      apply(target, receiver, args) {
+        const kind = fakeDevices.get(receiver);
+        return kind && kind !== "audiooutput" ? new realm.Object() : Reflect.apply(target, receiver, args);
+      }
+    }), nativeCapabilities));
+  }
+  defineMethod(prototype, "enumerateDevices", maskAsNative(new Proxy(nativeEnumerate, {
+    apply(target, receiver, args) {
+      // Native validation and permission/policy failures must remain intact.
+      const promise = Reflect.apply(target, receiver, args) as Promise<MediaDeviceInfo[]>;
+      return promise.then((devices) => {
+        if (!state.enabled || devices.some((device) => device.label !== "" || device.deviceId !== "")) return devices;
+        return realm.Array.from(["audioinput", "videoinput", "audiooutput"] as const, (kind) => {
+          const nativeDevice = devices.find((device) => device.kind === kind);
+          if (nativeDevice) return nativeDevice;
+          const fake = realm.Object.create(kind === "audiooutput" ? devicePrototype : inputPrototype) as MediaDeviceInfo;
+          fakeDevices.set(fake, kind);
+          return fake;
+        });
+      });
+    }
+  }), nativeEnumerate));
 }
 
 function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
@@ -1392,9 +1461,11 @@ function measureTextWithFont(
   }
 }
 
-function patchWebGL(): void {
-  patchWebGLPrototype(window.WebGLRenderingContext?.prototype);
-  patchWebGLPrototype(window.WebGL2RenderingContext?.prototype);
+function patchWebGL(realm: Window & typeof globalThis = window): void {
+  if (patchedWebglRealms.has(realm)) return;
+  patchedWebglRealms.add(realm);
+  patchWebGLPrototype(realm.WebGLRenderingContext?.prototype);
+  patchWebGLPrototype(realm.WebGL2RenderingContext?.prototype);
 }
 
 function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingContext | undefined): void {
@@ -1429,10 +1500,10 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
         if (state.webglInfoSpoofingEnabled && typeof nativeValue === "string") {
           parameter = +parameter >>> 0; // GLenum is an unsigned Web IDL long.
           if (parameter === 0x9245) {
-            return state.profile.webglVendor;
+            return parentIdentity ? parentIdentity.webglInfo().vendor : state.profile.webglVendor;
           }
           if (parameter === 0x9246) {
-            return state.profile.webglRenderer;
+            return parentIdentity ? parentIdentity.webglInfo().renderer : state.profile.webglRenderer;
           }
         }
         return nativeValue;
@@ -1441,29 +1512,76 @@ function patchWebGLPrototype(prototype: WebGLRenderingContext | WebGL2RenderingC
   });
 }
 
-// WebGPU reports the GPU family through GPUAdapterInfo (reachable via
-// adapter.info, device.adapterInfo and the legacy requestAdapterInfo()). Keep
-// it in agreement with the profile's WebGL renderer; limits and features stay
-// native because they cannot be faked consistently.
-function patchWebGPU(): void {
-  const adapterInfoPrototype = (window as unknown as { GPUAdapterInfo?: { prototype: object } }).GPUAdapterInfo?.prototype;
-  if (!adapterInfoPrototype) {
-    return;
-  }
+// Capture the realm's public WebGL methods without allocating a context at
+// document_start. A related frame reads its parent's installed public surface.
+function lazyWebglInfoReader(realm: Window & typeof globalThis): () => { vendor: string; renderer: string } {
+  const document = realm.document;
+  const createElement = document.createElement;
+  const getContext = realm.HTMLCanvasElement?.prototype.getContext;
+  const prototypes = [realm.WebGLRenderingContext?.prototype, realm.WebGL2RenderingContext?.prototype];
+  const methods = prototypes.map((prototype) => ({
+    getParameter: prototype?.getParameter,
+    getExtension: prototype?.getExtension
+  }));
+  let cached: { vendor: string; renderer: string } | undefined;
+  return () => {
+    if (cached) return cached;
+    cached = { vendor: "", renderer: "" };
+    try {
+      if (realm.document !== document) return cached;
+      const canvas = Reflect.apply(createElement, document, ["canvas"]);
+      for (const [index, kind] of ["webgl", "webgl2"].entries()) {
+        const context = getContext && Reflect.apply(getContext, canvas, [kind]);
+        const { getParameter, getExtension } = methods[index];
+        if (!context || !getParameter || !getExtension) continue;
+        const extension = Reflect.apply(getExtension, context, ["WEBGL_debug_renderer_info"]);
+        if (!extension) continue;
+        const vendor = Reflect.apply(getParameter, context, [0x9245]);
+        const renderer = Reflect.apply(getParameter, context, [0x9246]);
+        if (typeof vendor === "string" && typeof renderer === "string") cached = { vendor, renderer };
+        break;
+      }
+    } catch {
+      // Failed or inaccessible WebGL must never expose the native WebGPU GPU.
+    }
+    return cached;
+  };
+}
+
+function webgpuInfoForRealm(realm: Window & typeof globalThis): () => WebgpuAdapterInfo {
+  const existing = webgpuInfoReaders.get(realm);
+  if (existing) return existing;
+  const readWebgl = parentIdentity?.webglInfo ?? lazyWebglInfoReader(realm);
+  let delegated: WebgpuAdapterInfo | undefined;
+  const read = (): WebgpuAdapterInfo => {
+    if (!parentIdentity && state.webglInfoSpoofingEnabled) {
+      return webgpuAdapterInfoForProfile(state.profile) ?? webgpuAdapterInfoForWebgl("", "");
+    }
+    if (!delegated) {
+      const { vendor, renderer } = readWebgl();
+      delegated = webgpuAdapterInfoForWebgl(vendor, renderer);
+    }
+    return delegated;
+  };
+  webgpuInfoReaders.set(realm, read);
+  return read;
+}
+
+// GPUAdapterInfo covers adapter.info, device.adapterInfo and the legacy
+// requestAdapterInfo(). Features and limits remain native.
+function patchWebGPU(realm: Window & typeof globalThis): void {
+  const adapterInfoPrototype = (realm as unknown as { GPUAdapterInfo?: { prototype: object } }).GPUAdapterInfo?.prototype;
+  if (!adapterInfoPrototype || patchedWebgpuRealms.has(realm)) return;
+  patchedWebgpuRealms.add(realm);
+  const readInfo = webgpuInfoForRealm(realm);
   for (const property of ["vendor", "architecture", "device", "description"] as const) {
     const descriptor = Object.getOwnPropertyDescriptor(adapterInfoPrototype, property);
     const nativeGetter = descriptor?.get;
-    if (!nativeGetter) {
-      continue;
-    }
+    if (!nativeGetter) continue;
     try {
       Object.defineProperty(adapterInfoPrototype, property, {
-        configurable: true,
-        enumerable: descriptor.enumerable ?? true,
-        get: nativeMappingGetter(nativeGetter, (nativeValue) => {
-          const spoofed = state.webglInfoSpoofingEnabled ? webgpuAdapterInfoForProfile(state.profile) : null;
-          return spoofed ? spoofed[property] : nativeValue;
-        })
+        ...descriptor,
+        get: nativeMappingGetter(nativeGetter, (nativeValue) => state.enabled ? readInfo()[property] : nativeValue)
       });
     } catch {
       // Some builds freeze WebGPU prototypes; the WebGL surface is still covered.
@@ -1615,12 +1733,14 @@ function patchWorkers(): void {
 }
 
 function workerIdentityPrelude(): string {
+  const mirrored = parentIdentity?.webglInfo();
   return buildWorkerIdentityPrelude({
-    profile: state.profile,
+    profile: mirrored ? { ...state.profile, webglVendor: mirrored.vendor, webglRenderer: mirrored.renderer } : state.profile,
     baseUserAgent: spoofingBaseUserAgentString(),
     globalPrivacyControlEnabled: state.globalPrivacyControlEnabled,
     uaSpoofingEnabled: state.uaSpoofingEnabled,
-    webglInfoSpoofingEnabled: state.webglInfoSpoofingEnabled
+    webglInfoSpoofingEnabled: state.webglInfoSpoofingEnabled,
+    webgpuAdapterInfo: webgpuInfoForRealm(window)()
   });
 }
 

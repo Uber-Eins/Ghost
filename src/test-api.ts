@@ -10,6 +10,7 @@ export {
   applyHeliumFlagDetection,
   classifyClientHints,
   isSpoofedWebglInfo,
+  WEBGL_SPOOF_PRESETS,
   normalizeHeliumFlagDetection,
   uaReductionFromClientHints
 } from "./shared/helium-detect";
@@ -37,7 +38,8 @@ export {
   stableProfileIdForSite,
   userAgentForProfile,
   userAgentMetadataForProfile,
-  webgpuAdapterInfoForProfile
+  webgpuAdapterInfoForProfile,
+  webgpuAdapterInfoForWebgl
 } from "./shared/profiles";
 export {
   DEFAULT_SITE_RULE,
