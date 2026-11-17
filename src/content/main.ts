@@ -25,6 +25,7 @@ interface GhostState {
 }
 
 interface BootstrapPayload {
+  sessionSalt?: string;
   build?: BuildTarget;
   settings?: GhostSettings;
 }
@@ -156,6 +157,11 @@ if (initialPageUrl) {
 }
 
 function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
+  // Persisted user scripts can carry the previous session salt into restored
+  // tabs. Keep synchronous noise for this document; do not reload for salt alone.
+  if (bootstrapProfile) {
+    resolved = { ...resolved, seed: initialSeed };
+  }
   const shouldReload = reloadOnProfileChangeRequestIds.delete(requestId) && profileChanged(resolved);
   const surfaceOwnershipChanged = (
     installedSurfaceOwnership.profileProtection !== resolved.enabled
@@ -420,7 +426,8 @@ function resolveBootstrapPayload(
     return null;
   }
   const build = payload.build === "advanced" ? "advanced" : __GHOST_BUILD__;
-  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build, Date.now(), topLevelUrl);
+  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build, Date.now(), topLevelUrl,
+    typeof payload.sessionSalt === "string" ? payload.sessionSalt : undefined);
 }
 
 function currentTopLevelGhostPageUrl(fallbackUrl: string): string {

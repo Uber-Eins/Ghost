@@ -359,13 +359,15 @@ test("a fresh extension context repairs user-script registration after access is
     }
   };
   const previousChrome = globalThis.chrome;
+  const storage = { session: { async get(key) { return { [key]: "repair-session-salt" }; } } };
   try {
-    globalThis.chrome = { scripting };
+    globalThis.chrome = { scripting, storage };
     assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), false);
     assert.equal(registeredContentScripts.has("ghost-page-main-fallback"), false);
 
     globalThis.chrome = {
       scripting,
+      storage,
       userScripts: {
         async getScripts({ ids }) {
           return ids.flatMap((id) => registeredUserScripts.has(id) ? [registeredUserScripts.get(id)] : []);

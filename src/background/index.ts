@@ -3,6 +3,7 @@ import type { AdvancedResult } from "./advanced";
 import { fetchAutomaticLocation } from "./automatic-location";
 import { isSynchronousContentBootstrapAvailable, refreshContentBootstrap } from "./bootstrap";
 import { clearTabHeaderRule, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
+import { getSessionSalt } from "./session-seed";
 import { stableSeed } from "../shared/hash";
 import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetection, sameHeliumSurfaces } from "../shared/helium-detect";
 import type { HeliumFlagDetection } from "../shared/helium-detect";
@@ -224,10 +225,11 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
 
   const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
   const revision = settingsRevision;
-  const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings);
+  const sessionSalt = await getSessionSalt();
+  const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings, sessionSalt);
 
   if (revision !== settingsRevision) {
-    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
   }
 
   if (tabId !== null && tabRevision === currentTabOverrideRevision(tabId)) {
@@ -237,7 +239,7 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (revision !== settingsRevision) {
-    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
   }
 
   if (tabId !== null) {
@@ -248,7 +250,7 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   if (revision !== settingsRevision) {
-    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings());
+    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
   }
 
   return resolved;
@@ -259,8 +261,8 @@ function trustedTopLevelUrl(sender: chrome.runtime.MessageSender, fallbackUrl: s
   return typeof tabUrl === "string" && isSupportedPageUrl(tabUrl) ? tabUrl : fallbackUrl;
 }
 
-function resolveFrameProfile(pageUrl: string, topLevelUrl: string, settings: GhostSettings) {
-  return resolveProfile(pageUrl, settings, __GHOST_BUILD__, Date.now(), topLevelUrl);
+function resolveFrameProfile(pageUrl: string, topLevelUrl: string, settings: GhostSettings, sessionSalt: string) {
+  return resolveProfile(pageUrl, settings, __GHOST_BUILD__, Date.now(), topLevelUrl, sessionSalt);
 }
 
 function shouldApplyTabWideOverrides(sender: chrome.runtime.MessageSender): sender is chrome.runtime.MessageSender & { tab: chrome.tabs.Tab & { id: number } } {
@@ -469,7 +471,7 @@ async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refr
   const steps: Array<() => Promise<void>> = [
     () => scheduleTemporaryDisableAlarm(settings),
     () => scheduleAutomaticLocationAlarm(settings),
-    () => refreshContentBootstrap(settings, __GHOST_BUILD__),
+    async () => refreshContentBootstrap(settings, __GHOST_BUILD__, await getSessionSalt()),
     () => refreshHeaderRules(settings),
     () => updateActionIcon(settings)
   ];
