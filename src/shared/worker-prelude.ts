@@ -1,4 +1,5 @@
-import { appVersionForProfile, navigatorPlatformForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile } from "./profiles";
+import { appVersionForProfile, navigatorPlatformForProfile, userAgentForProfile, userAgentMetadataForProfile } from "./profiles";
+import type { WebgpuAdapterInfo } from "./profiles";
 import type { Profile } from "./types";
 
 declare const __GHOST_WORKER_TIME_PATCH__: string;
@@ -10,6 +11,7 @@ export interface WorkerIdentityOptions {
   globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;
+  webgpuAdapterInfo: WebgpuAdapterInfo;
 }
 
 // Script source that gives a worker global the same identity as the page. It
@@ -34,7 +36,7 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
       }
       : null
   };
-  const webgpu = options.webglInfoSpoofingEnabled ? webgpuAdapterInfoForProfile(profile) : null;
+  const webgpu = options.webgpuAdapterInfo;
   return [
     "(function(){",
     "var sources=new WeakMap(),nativeToString=Function.prototype.toString;",
@@ -44,9 +46,7 @@ export function workerIdentityPrelude(options: WorkerIdentityOptions): string {
     // Same Date/Intl rewriting as the page; reads `identity` and `mask` above.
     `try{${__GHOST_WORKER_TIME_PATCH__}}catch(error){}`,
     options.webglInfoSpoofingEnabled ? workerWebGLPrelude(profile) : "",
-    webgpu
-      ? `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(function(){nativeGetter.call(this);return info[key];},nativeGetter)});}catch(error){}});}`
-      : "",
+    `var info=${JSON.stringify(webgpu)},gpuProto=self.GPUAdapterInfo&&self.GPUAdapterInfo.prototype;if(gpuProto){["vendor","architecture","device","description"].forEach(function(key){var descriptor=Object.getOwnPropertyDescriptor(gpuProto,key);if(!descriptor||!descriptor.get)return;var nativeGetter=descriptor.get;try{Object.defineProperty(gpuProto,key,{configurable:true,enumerable:descriptor.enumerable,get:mask(function(){nativeGetter.call(this);return info[key];},nativeGetter)});}catch(error){}});}`,
     "})();"
   ].join("");
 }

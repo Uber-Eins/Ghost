@@ -465,11 +465,13 @@ export interface WebgpuAdapterInfo {
 // the values are coarse family labels. Derive a pair that agrees with the
 // profile's WebGL renderer so the two GPU surfaces never contradict each other.
 export function webgpuAdapterInfoForProfile(profile: Profile): WebgpuAdapterInfo | null {
-  const text = `${profile.webglVendor} ${profile.webglRenderer}`.toLowerCase();
-  const vendor = webgpuVendorFromText(text);
-  if (!vendor) {
-    return null;
-  }
+  const info = webgpuAdapterInfoForWebgl(profile.webglVendor, profile.webglRenderer);
+  return info.vendor ? info : null;
+}
+
+export function webgpuAdapterInfoForWebgl(webglVendor: string, webglRenderer: string): WebgpuAdapterInfo {
+  const text = `${webglVendor} ${webglRenderer}`.toLowerCase();
+  const vendor = /llvmpipe/.test(text) ? "" : webgpuVendorFromText(text);
   return {
     vendor,
     architecture: webgpuArchitectureForVendor(vendor, text),
@@ -528,8 +530,16 @@ function webgpuArchitectureForVendor(vendor: string, text: string): string {
       if (/uhd graphics 6\d{2}|hd graphics [5-6]\d{2}/.test(text)) {
         return "gen-9";
       }
+      // Helium's generic HD Graphics preset can represent a Gen 9 device.
+      if (/intel\(r\) hd graphics, or similar/.test(text)) {
+        return "gen-9";
+      }
       return "gen-12lp";
     case "amd":
+      // Dawn gpu_info.json: GCN 2 includes Hawaii (R9 290, PCI 0x67B0).
+      if (/radeon r9 200 series/.test(text)) {
+        return "gcn-2";
+      }
       if (/rx\s*7\d{3}|7[68]0m/.test(text)) {
         return "rdna-3";
       }
@@ -540,6 +550,9 @@ function webgpuArchitectureForVendor(vendor: string, text: string): string {
         return "gcn-5";
       }
       return "rdna-2";
+    case "qualcomm":
+      // Dawn gpu_info.json names the Adreno 600 family "Adreno 6xx".
+      return /adreno.*\b6\d{2}\b/.test(text) ? "adreno-6xx" : "";
     default:
       return "";
   }
