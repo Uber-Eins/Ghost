@@ -603,14 +603,19 @@ function synchronizeChildNavigator(childWindow: Window | null): void {
     }
 
     let languagesCache: { key: string; value: readonly string[] } | null = null;
+    // User-Agent surfaces are mirrored even when Ghost does not own them: the
+    // child's own related-frame install has no bootstrap settings and may
+    // have spoofed them with the fallback profile.
     const properties = [
       "language",
       "languages",
       "deviceMemory",
       "globalPrivacyControl",
-      ...(installedSurfaceOwnership.userAgent
-        ? ["platform", "vendor", "userAgent", "appVersion", "userAgentData"]
-        : [])
+      "platform",
+      "vendor",
+      "userAgent",
+      "appVersion",
+      "userAgentData"
     ];
     for (const property of properties) {
       const mainNavigator = navigator as unknown as Record<string, unknown>;
