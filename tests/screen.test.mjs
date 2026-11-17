@@ -5,6 +5,11 @@ import vm from "node:vm";
 import ts from "typescript";
 import { PRESET_PROFILES, DEFAULT_SETTINGS, normalizeSettings, resolveProfile, screenForProfile, rewriteScreenMediaQuery } from "../dist/test/test-api.js";
 
+const nativeWrapperCode = ts.transpileModule(
+  readFileSync(new URL("../src/shared/native-wrapper.ts", import.meta.url), "utf8").replaceAll("export ", ""),
+  { compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+).outputText;
+
 const profile = PRESET_PROFILES[0];
 const smallOuter = { width: 1000, height: 600 };
 const derive = (changes = {}, outer = smallOuter) => screenForProfile({ ...profile, ...changes }, "Win32", outer);
@@ -146,7 +151,7 @@ function harness() {
     var initialProfileSignature;
     var location = { reload() { throw new Error('Unexpected reload'); } };
   `, context);
-  vm.runInContext(code, context);
+  vm.runInContext(nativeWrapperCode + code, context);
   vm.runInContext("initialProfileSignature = profileSignature(profile); patchFunctionToString(); patchScreen(window);", context);
   return { context, run: (text) => vm.runInContext(text, context) };
 }
