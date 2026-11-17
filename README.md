@@ -1,6 +1,6 @@
 # Ghost
 
-Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and text-metric surface without telemetry. Its independent Global Privacy Control switch exposes `navigator.globalPrivacyControl` and sends `Sec-GPC: 1` on HTTP requests. Ghost does not use a remote service unless the optional automatic network-location feature is enabled.
+Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and text-metric surface without telemetry. Global Privacy Control is left to Helium's own setting, which implements it in the engine for documents and workers. Ghost does not use a remote service unless the optional automatic network-location feature is enabled.
 
 ## Builds
 
@@ -66,7 +66,7 @@ Local speech voices follow the reported Windows platform and the profile's langu
 
 ### Blob Worker compatibility
 
-Ghost composes tracked Blob Worker source and its identity setup into one entry script. That setup mirrors the page's `navigator` surface (language, languages, device memory, Global Privacy Control and, unless delegated to Helium, platform, User-Agent and `userAgentData`) onto `WorkerNavigator`, together with the same `Date`/`Intl` timezone and default-locale rewriting the page uses, and WebGPU adapter identity derived from the page's reported WebGL pair (plus WebGL identity when Ghost owns it). It does not add an `importScripts()` or dynamic `import()` loader: a site's CSP may allow Blob Worker entry scripts but forbid importing Blob scripts inside them. The site's CSP is not modified.
+Ghost composes tracked Blob Worker source and its identity setup into one entry script. That setup mirrors the page's `navigator` surface (language, languages, device memory and, unless delegated to Helium, platform, User-Agent and `userAgentData`) onto `WorkerNavigator`, together with the same `Date`/`Intl` timezone and default-locale rewriting the page uses, and WebGPU adapter identity derived from the page's reported WebGL pair (plus WebGL identity when Ghost owns it). It does not add an `importScripts()` or dynamic `import()` loader: a site's CSP may allow Blob Worker entry scripts but forbid importing Blob scripts inside them. The site's CSP is not modified.
 
 The Blob observer preserves the native constructor and bytes and records strict/sloppy directive mode only when it can be determined safely from plain string parts. Workers with untracked or indeterminate source (for example binary parts, iterators, hashbangs, or ambiguous directive prologues) remain native, including their `navigator`, timezone and GPU surface. This is a Worker-only compatibility fallback, not a site exclusion; page protection remains enabled. Workers loaded from a URL cannot be rewritten by the page without changing their `self.location`, relative imports and CSP behavior, so they remain native, as do shared workers and service workers. The Advanced build does not attach its debugger to workers to cover them: doing so makes Cloudflare Turnstile reject the browser.
 

@@ -28,7 +28,6 @@ const MAX_HEADER_VALUE_LENGTH = 1024;
 
 export const DEFAULT_SETTINGS: GhostSettings = {
   enabled: true,
-  globalPrivacyControlEnabled: true,
   advancedEnabled: true,
   disableUserAgentSpoofing: false,
   disableCanvasMeasureTextSpoofing: false,
@@ -59,10 +58,6 @@ export function normalizeSettings(input: unknown): GhostSettings {
   const siteProfiles = normalizeSiteProfiles(candidate.siteProfiles, profiles, siteNonces);
   return {
     enabled: booleanValue(candidate.enabled, DEFAULT_SETTINGS.enabled),
-    globalPrivacyControlEnabled: booleanValue(
-      candidate.globalPrivacyControlEnabled,
-      DEFAULT_SETTINGS.globalPrivacyControlEnabled
-    ),
     advancedEnabled: booleanValue(candidate.advancedEnabled, DEFAULT_SETTINGS.advancedEnabled),
     disableUserAgentSpoofing: booleanValue(candidate.disableUserAgentSpoofing, DEFAULT_SETTINGS.disableUserAgentSpoofing),
     disableCanvasMeasureTextSpoofing: booleanValue(
@@ -178,7 +173,6 @@ export function resolveProfile(
   return {
     build,
     enabled,
-    globalPrivacyControlEnabled: settings.globalPrivacyControlEnabled,
     uaSpoofingEnabled,
     canvasMeasureTextSpoofingEnabled,
     webglInfoSpoofingEnabled,

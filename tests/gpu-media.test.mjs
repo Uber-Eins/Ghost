@@ -186,7 +186,7 @@ test("workerIdentityPrelude covers WebGPU from page-derived info even with Heliu
   builder.run("var __GHOST_WORKER_TIME_PATCH__ = ''");
   for (const supplied of [{ ...emptyInfo, vendor: "amd", architecture: "gcn-2" }, emptyInfo]) {
     builder.context.supplied = supplied;
-    const prelude = builder.run("workerIdentityPrelude({ profile, baseUserAgent: '', globalPrivacyControlEnabled: false, uaSpoofingEnabled: false, webglInfoSpoofingEnabled: false, webgpuAdapterInfo: supplied })");
+    const prelude = builder.run("workerIdentityPrelude({ profile, baseUserAgent: '', uaSpoofingEnabled: false, webglInfoSpoofingEnabled: false, webgpuAdapterInfo: supplied })");
     const worker = harness();
     worker.run(prelude);
     assert.equal(worker.run("info.vendor"), supplied.vendor);
@@ -268,11 +268,10 @@ test("install covers delegated WebGPU and media but leaves excluded profile surf
     h.run(`
       var installedSurfaceOwnership = { profileProtection: ${enabled}, webglInfo: false };
       var callsAtInstall = [];
-      ${["patchGlobalPrivacyControl", "patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchIframeNavigatorAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
+      ${["patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchIframeNavigatorAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
     `);
     h.run(installCode);
     h.run("install()");
-    assert.equal(h.run("callsAtInstall.includes('patchGlobalPrivacyControl')"), true);
     assert.equal(h.run("MediaDevices.prototype.enumerateDevices !== originals.enumerate"), enabled);
     assert.equal(h.run("Object.getOwnPropertyDescriptor(GPUAdapterInfo.prototype, 'vendor').get !== originals.vendor"), enabled);
     assert.equal(h.run("creates"), 0);
@@ -287,7 +286,7 @@ test("page workerIdentityPrelude passes the derived page GPU info and related-pa
       var captured;
       function buildWorkerIdentityPrelude(options) { captured = options; return 'prelude'; }
       function spoofingBaseUserAgentString() { return ''; }
-      state.globalPrivacyControlEnabled = false; state.uaSpoofingEnabled = false;
+      state.uaSpoofingEnabled = false;
       if (${mirrored}) {
         parentIdentity = { webglInfo: lazyWebglInfoReader(window) };
         state.webglInfoSpoofingEnabled = true;

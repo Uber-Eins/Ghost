@@ -41,7 +41,6 @@ export interface Profile {
 
 export interface GhostSettings {
   enabled: boolean;
-  globalPrivacyControlEnabled: boolean;
   advancedEnabled: boolean;
   disableUserAgentSpoofing: boolean;
   disableCanvasMeasureTextSpoofing: boolean;
@@ -62,7 +61,6 @@ export interface GhostSettings {
 export interface ResolvedProfile {
   build: BuildTarget;
   enabled: boolean;
-  globalPrivacyControlEnabled: boolean;
   uaSpoofingEnabled: boolean;
   canvasMeasureTextSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;

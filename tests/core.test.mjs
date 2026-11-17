@@ -454,8 +454,7 @@ test("DNR rules keep navigation and initiator profiles coherent", () => {
     ...settings,
     excludedDomains: [DEFAULT_SITE_RULE]
   }));
-  assert.equal(wildcardExcludedRules.length, 4);
-  assert.ok(wildcardExcludedRules.every((rule) => headerNames(rule).has("sec-gpc")));
+  assert.deepEqual(wildcardExcludedRules, []);
 
   const excludedSettings = normalizeSettings({
     ...settings,
@@ -481,36 +480,18 @@ test("DNR rules keep navigation and initiator profiles coherent", () => {
   )));
 });
 
-test("GPC sends a global request signal independently of Ghost profile protection", () => {
+test("Global Privacy Control is left to Helium: no GPC rules and the legacy setting is dropped", () => {
   const settings = normalizeSettings({
     ...DEFAULT_SETTINGS,
+    globalPrivacyControlEnabled: true,
     enabled: false,
     excludedDomains: [DEFAULT_SITE_RULE]
   });
-  assert.equal(settings.globalPrivacyControlEnabled, true);
-  assert.equal(resolveProfile("https://example.com", settings, "lite").globalPrivacyControlEnabled, true);
-
-  const rules = buildHeaderRulesForTesting(settings);
-  assert.equal(rules.length, 4);
-  assert.deepEqual(
-    rules.map((rule) => rule.condition.urlFilter).sort(),
-    ["|http://", "|https://", "|ws://", "|wss://"]
-  );
-  for (const rule of rules) {
-    assert.equal(rule.action.type, "modifyHeaders");
-    assert.deepEqual(rule.action.requestHeaders, [{ header: "Sec-GPC", operation: "set", value: "1" }]);
-    assert.ok(rule.priority > 1_000_001);
-    assert.ok(rule.condition.resourceTypes.includes("main_frame"));
-    assert.ok(rule.condition.resourceTypes.includes("xmlhttprequest"));
-    assert.ok(rule.condition.resourceTypes.includes("websocket"));
-  }
-
-  const disabled = normalizeSettings({
-    ...settings,
-    globalPrivacyControlEnabled: false
-  });
-  assert.equal(resolveProfile("https://example.com", disabled, "lite").globalPrivacyControlEnabled, false);
-  assert.deepEqual(buildHeaderRulesForTesting(disabled), []);
+  assert.equal("globalPrivacyControlEnabled" in settings, false);
+  assert.equal("globalPrivacyControlEnabled" in resolveProfile("https://example.com", settings, "lite"), false);
+  assert.deepEqual(buildHeaderRulesForTesting(settings), []);
+  const enabledRules = buildHeaderRulesForTesting(normalizeSettings({ ...DEFAULT_SETTINGS }));
+  assert.ok(enabledRules.every((rule) => !(rule.action.requestHeaders ?? []).some((header) => header.header.toLowerCase() === "sec-gpc")));
 });
 
 test("advanced overrides reuse, serialize, reset, and clean debugger sessions", async () => {
@@ -784,7 +765,6 @@ test("profiles expose an allow-listed font set instead of enumerating blocked fo
 test("resolveProfile respects global disable and exclusions", () => {
   const disabled = normalizeSettings({ ...DEFAULT_SETTINGS, enabled: false });
   assert.equal(resolveProfile("https://example.com", disabled, "lite").enabled, false);
-  assert.equal(resolveProfile("https://example.com", disabled, "lite").globalPrivacyControlEnabled, true);
   assert.equal(resolveProfile("https://example.com", disabled, "lite").uaSpoofingEnabled, false);
   assert.equal(resolveProfile("https://example.com", disabled, "lite").reason, "global-disabled");
 
@@ -898,7 +878,6 @@ test("settings migration rejects malformed scalar settings", () => {
   const settings = normalizeSettings({
     ...DEFAULT_SETTINGS,
     enabled: "false",
-    globalPrivacyControlEnabled: "false",
     advancedEnabled: "false",
     disableUserAgentSpoofing: "true",
     temporaryDisabledUntil: Number.NaN,
@@ -909,7 +888,6 @@ test("settings migration rejects malformed scalar settings", () => {
     }
   });
   assert.equal(settings.enabled, DEFAULT_SETTINGS.enabled);
-  assert.equal(settings.globalPrivacyControlEnabled, DEFAULT_SETTINGS.globalPrivacyControlEnabled);
   assert.equal(settings.advancedEnabled, DEFAULT_SETTINGS.advancedEnabled);
   assert.equal(settings.disableUserAgentSpoofing, DEFAULT_SETTINGS.disableUserAgentSpoofing);
   assert.equal(settings.temporaryDisabledUntil, null);

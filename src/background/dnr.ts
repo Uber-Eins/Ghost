@@ -19,7 +19,6 @@ const RULE_ID_RANGE = 100000;
 const TAB_RULE_ID_LIMIT = TAB_RULE_ID_BASE + RULE_ID_RANGE;
 const EXCLUSION_RULE_PRIORITY = 1_000_000;
 const FRAME_EXCLUSION_RULE_PRIORITY = EXCLUSION_RULE_PRIORITY + 1;
-const GLOBAL_PRIVACY_CONTROL_PRIORITY = FRAME_EXCLUSION_RULE_PRIORITY + 1;
 const TAB_RULE_PRIORITY = EXCLUSION_RULE_PRIORITY - 1;
 const {
   ResourceType,
@@ -208,9 +207,7 @@ async function refreshHeaderRulesNow(settings: GhostSettings): Promise<void> {
 
 function buildRules(settings: GhostSettings): chrome.declarativeNetRequest.Rule[] {
   const usedRuleIds = new Set<number>();
-  const rules = settings.globalPrivacyControlEnabled
-    ? globalPrivacyControlRules(usedRuleIds)
-    : [];
+  const rules: chrome.declarativeNetRequest.Rule[] = [];
   if (!headerRulesAllowed(settings) || settings.excludedDomains.some(isWildcardExclusion)) {
     return rules;
   }
@@ -231,18 +228,6 @@ function buildRules(settings: GhostSettings): chrome.declarativeNetRequest.Rule[
     rules.push(...rulesForSite(ruleKey, profile, usedRuleIds, !settings.disableUserAgentSpoofing));
   }
   return rules;
-}
-
-function globalPrivacyControlRules(usedRuleIds: Set<number>): chrome.declarativeNetRequest.Rule[] {
-  return (["http", "https", "ws", "wss"] as const).map((scheme) => modifyHeadersRule(
-    nextRuleId(`global-privacy-control:${scheme}`, usedRuleIds),
-    GLOBAL_PRIVACY_CONTROL_PRIORITY,
-    [{ header: "Sec-GPC", operation: HeaderOperation.SET, value: "1" }],
-    {
-      urlFilter: `|${scheme}://`,
-      resourceTypes: RESOURCE_TYPES
-    }
-  ));
 }
 
 function isWildcardExclusion(exclusion: string): boolean {
