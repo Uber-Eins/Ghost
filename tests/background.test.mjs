@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { DEFAULT_SETTINGS, normalizeSettings } from "../dist/test/test-api.js";
+import { webcrypto } from "node:crypto";
+import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
 
 const background = readFileSync(new URL("../dist/test/background-advanced.js", import.meta.url), "utf8");
 
@@ -26,10 +27,9 @@ async function promptly(promise) {
   }
 }
 
-function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false } = {}) {
+function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, session = {} } = {}) {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, heliumFlagSync: false });
   const local = { "ghost.settings": settings };
-  const session = {};
   const events = {};
   const errors = [];
   const calls = [];
@@ -49,7 +49,10 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   });
   const storageArea = data => ({
     async get(key) { return { [key]: structuredClone(data[key]) }; },
-    async set(value) { Object.assign(data, structuredClone(value)); }
+    async set(value) {
+      if (data === session) calls.push({ type: "session-storage", value: structuredClone(value) });
+      Object.assign(data, structuredClone(value));
+    }
   });
   const chrome = {
     storage: { local: storageArea(local), session: storageArea(session) },
@@ -135,13 +138,13 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     }
   };
   const context = vm.createContext({
-    chrome, URL, setTimeout, clearTimeout, Intl, Date,
+    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto,
     navigator: { userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" },
     console: { error(...args) { errors.push(args.map(String).join(" ")); } }
   });
   vm.runInContext(background, context, { filename: "background-advanced.js" });
   return {
-    local, calls, errors, attached, blocked: blocked.promise, notified: notified.promise,
+    local, session, calls, errors, attached, blocked: blocked.promise, notified: notified.promise,
     initialized: initialized.promise, detached: detached.promise,
     release() { gate.resolve(); },
     failNextGlobalUpdate() { failDynamic = true; },
@@ -271,4 +274,37 @@ test("a pending per-tab header update does not block global protection commits",
   } finally {
     h.release();
   }
+});
+
+
+test("session noise salt is created once and reused across worker restarts and settings saves", async () => {
+  const first = harness();
+  await promptly(first.initialized);
+  const salt = first.bootstrap.sessionSalt;
+  assert.match(salt, /^[a-f0-9]{32}$/);
+  assert.deepEqual(Object.values(first.session), [salt]);
+  const response = await promptly(first.request(
+    { type: "resolveProfile", url: "https://example.com/" },
+    { frameId: 0, url: "https://example.com/", tab: { id: 7, url: "https://example.com/" } }
+  ));
+  assert.equal(response.ok, true);
+  const synchronous = resolveProfile("https://example.com/", first.bootstrap.settings, "advanced", Date.now(), "https://example.com/", salt);
+  assert.equal(response.value.seed, synchronous.seed);
+  assert.equal(JSON.stringify(response).includes(salt), false);
+  await promptly(first.request({ type: "setGlobalEnabled", enabled: false }));
+  assert.equal(first.bootstrap.sessionSalt, salt);
+  assert.equal(first.calls.filter(call => call.type === "session-storage" && "ghost.sessionNoiseSalt" in call.value).length, 1);
+  assert.equal(JSON.stringify(first.local).includes(salt), false);
+
+  const restarted = harness({ session: first.session });
+  await promptly(restarted.initialized);
+  assert.equal(restarted.bootstrap.sessionSalt, salt);
+  assert.equal(restarted.calls.filter(call => call.type === "session-storage" && "ghost.sessionNoiseSalt" in call.value).length, 0);
+
+  const nextSession = harness();
+  await promptly(nextSession.initialized);
+  assert.notEqual(nextSession.bootstrap.sessionSalt, salt);
+  assert.deepEqual(first.errors, []);
+  assert.deepEqual(restarted.errors, []);
+  assert.deepEqual(nextSession.errors, []);
 });

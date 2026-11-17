@@ -156,7 +156,8 @@ export function resolveProfile(
   settings: GhostSettings,
   build: BuildTarget,
   now = Date.now(),
-  partitionUrl = url
+  partitionUrl = url,
+  sessionSalt?: string
 ): ResolvedProfile {
   // Profile selection and fingerprint seeds are partitioned by the top-level
   // site. Callers resolving a subframe pass its URL as `url` (so document
@@ -183,7 +184,8 @@ export function resolveProfile(
     webglInfoSpoofingEnabled,
     reason: !settings.enabled ? "global-disabled" : temporarilyDisabled ? "temporary-disabled" : excluded ? "excluded-domain" : undefined,
     siteKey,
-    seed: stableSeed(siteKey, profile.id),
+    // Salt rotates noise only; persistent profile selection above is unchanged.
+    seed: stableSeed(siteKey, profile.id, sessionSalt ? `session:${sessionSalt}` : undefined),
     profile,
     advanced: {
       available: build === "advanced",
