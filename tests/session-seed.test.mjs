@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
 import vm from "node:vm";
-import { DEFAULT_SETTINGS, normalizeSettings, repairContentBootstrap, resolveProfile, stableSeed } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile, stableSeed } from "../dist/test/test-api.js";
 
 const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": "tokyo-ja-jp" } });
 const url = "https://example.com/path";
@@ -38,30 +38,6 @@ test("missing session salt preserves the deterministic legacy seed", () => {
   assert.equal(legacy.seed, resolve("").seed);
   assert.equal(legacy.seed, resolve().seed);
 });
-
-test("fresh popup repair reads the current session salt without writing storage", async () => {
-  const previousChrome = globalThis.chrome;
-  let salt = "current-session";
-  let registered;
-  globalThis.chrome = {
-    storage: { session: { async get(key) { return { [key]: salt }; } } },
-    userScripts: {
-      async getScripts() { return registered ? [registered] : []; },
-      async register(scripts) { [registered] = scripts; },
-      async update(scripts) { [registered] = scripts; }
-    }
-  };
-  try {
-    assert.equal(await repairContentBootstrap(settings), true);
-    assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
-    salt = "next-session";
-    assert.equal(await repairContentBootstrap(settings), true);
-    assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
-  } finally {
-    globalThis.chrome = previousChrome;
-  }
-});
-
 
 const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
 

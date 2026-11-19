@@ -36,7 +36,7 @@
         sendMessage: (request, callback) => {
           if (request.type === "options.saveState") settings = structuredClone(request.settings);
           if (request.type === "options.resetState") settings = structuredClone(DEFAULT_SETTINGS);
-          callback({ ok: true, value: settings });
+          callback({ ok: true, value: request.type === "recheckContentBootstrap" ? true : settings });
         }
       },
       storage: { local: storage, session: storage, onChanged: { addListener: (listener) => listeners.add(listener), removeListener: (listener) => listeners.delete(listener) } },

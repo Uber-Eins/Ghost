@@ -98,6 +98,7 @@ export interface PopupState {
 export type RuntimeRequest =
   | { type: "resolveProfile"; url: string }
   | { type: "getPopupState"; url: string }
+  | { type: "recheckContentBootstrap" }
   | { type: "setGlobalEnabled"; enabled: boolean }
   | { type: "setSiteEnabled"; siteKey: string; url: string; enabled: boolean }
   | { type: "setSiteProfile"; siteKey: string; profileId: string }

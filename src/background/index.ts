@@ -116,6 +116,8 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
       return handleResolveProfile(message.url, sender);
     case "getPopupState":
       return getPopupState(message.url);
+    case "recheckContentBootstrap":
+      return enqueueSettingsApplication(async () => refreshContentBootstrap(await readSettings(), await getSessionSalt()));
     case "setGlobalEnabled":
       return mutateAndRefresh((settings) => {
         settings.enabled = message.enabled;
@@ -172,7 +174,6 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
       return applyDetectedHeliumFlags(normalizeHeliumFlagDetection(message.detection));
     case "options.getState":
       // Wait for the short global commit, never the detached tab fan-outs.
-      // This also avoids UI bootstrap repair racing cold-worker registration.
       return readAppliedSettings();
     case "options.saveState": {
       const settings = await mutateAndRefresh((draft) => {
@@ -330,9 +331,7 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
 }
 
 async function getPopupState(url: string): Promise<PopupState> {
-  // Only the global commit gates a control-panel read. Waiting for initial
-  // registration avoids a race with the fresh popup's bootstrap repair;
-  // debugger targets and content-script responses are not part of this queue.
+  // Only the global commit gates a control-panel read, not open-tab updates.
   const settings = await readAppliedSettings();
   if (settings.temporaryDisabledUntil !== null && settings.temporaryDisabledUntil <= Date.now()) {
     runBackgroundTask(refreshExpiredTemporaryDisable(settings));
@@ -464,7 +463,7 @@ async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refr
   const steps: Array<() => Promise<void>> = [
     () => scheduleTemporaryDisableAlarm(settings),
     () => scheduleAutomaticLocationAlarm(settings),
-    async () => refreshContentBootstrap(settings, await getSessionSalt()),
+    async () => { await refreshContentBootstrap(settings, await getSessionSalt()); },
     () => refreshHeaderRules(settings),
     () => updateActionIcon(settings)
   ];

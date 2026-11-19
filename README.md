@@ -22,7 +22,7 @@ A successful save means settings have been stored and extension-global protectio
 
 Tab updates retain ordering and skip obsolete queued revisions. Page profile replies do not wait for CDP and do not claim that a pending Advanced override has completed. Existing tabs can finish applying after the save acknowledgement; a permanently unresponsive target can still delay its own CDP work, but not the control panel or other settings commits.
 
-Each new service-worker instance reconciles persisted global configuration, including ordinary wake-ups without an `onStartup` event. The popup/options initial load waits only for this global transaction, not all tabs. This prevents a fresh UI context from racing the worker's initial user-script registration. Saving no longer re-registers a second, potentially outdated bootstrap payload from the options UI.
+Each new service-worker instance reconciles persisted global configuration, including ordinary wake-ups without an `onStartup` event. The popup/options initial load waits only for this global transaction, not all tabs. Only the service worker writes the bootstrap. Reopening the popup or options page asks it to check current User Scripts authorization; a rejected registration or update fails the settings transaction rather than removing the existing script.
 
 ## Helium compatibility
 

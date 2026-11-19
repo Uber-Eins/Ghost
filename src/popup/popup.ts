@@ -2,7 +2,7 @@ import { localizeDocument, t } from "../shared/i18n";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
 import { applyHeliumFlagDetection, detectHeliumFlags, sameHeliumSurfaces } from "../shared/helium-detect";
 import { utcOffsetLabel, utcOffsetMinutes } from "../shared/timezone";
-import { openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
+import { openUserScriptsSettingsPage } from "../background/bootstrap";
 import type { PopupState, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 type StatusTone = "ok" | "warn" | "danger" | "muted";
@@ -99,13 +99,8 @@ async function loadAndRepairPopupState(): Promise<PopupState> {
   if (state.earlyBootstrapAvailable) {
     return state;
   }
-  try {
-    const repaired = await repairContentBootstrap(state.settings);
-    return repaired ? { ...state, earlyBootstrapAvailable: true } : state;
-  } catch {
-    // The warning remains visible until synchronous registration succeeds.
-    return state;
-  }
+  await sendMessage<boolean>({ type: "recheckContentBootstrap" });
+  return loadPopupState();
 }
 
 // Keeps the Helium delegation switches aligned with the flags that are

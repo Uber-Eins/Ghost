@@ -27,7 +27,7 @@ async function promptly(promise) {
   }
 }
 
-function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, session = {} } = {}) {
+function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, userScriptsAuthorized = true, session = {} } = {}) {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, heliumFlagSync: false });
   const local = { "ghost.settings": settings };
   const events = {};
@@ -43,6 +43,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   let dynamicRules = [];
   let sessionRules = [];
   let failDynamic = false;
+  let failUserScriptWrite = false;
   const attached = new Set();
   const event = name => ({
     addListener(listener) { (events[name] ??= []).push(listener); }
@@ -54,6 +55,18 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
       Object.assign(data, structuredClone(value));
     }
   });
+  const userScriptsApi = {
+    async getScripts() { return structuredClone(userScripts); },
+    async register(scripts) { await this.update(scripts); },
+    async update(scripts) {
+      if (failUserScriptWrite) {
+        failUserScriptWrite = false;
+        throw new Error("forced bootstrap write failure");
+      }
+      userScripts = structuredClone(scripts);
+    },
+    async unregister() { calls.push({ type: "unregister-user-script" }); userScripts = []; }
+  };
   const chrome = {
     storage: { local: storageArea(local), session: storageArea(session) },
     runtime: {
@@ -79,12 +92,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
         }
       }
     },
-    userScripts: {
-      async getScripts() { return structuredClone(userScripts); },
-      async register(scripts) { userScripts = structuredClone(scripts); },
-      async update(scripts) { userScripts = structuredClone(scripts); },
-      async unregister() { userScripts = []; }
-    },
+    get userScripts() { return userScriptsAuthorized ? userScriptsApi : undefined; },
     scripting: {
       async getRegisteredContentScripts() { return structuredClone(contentScripts); },
       async registerContentScripts(scripts) { contentScripts = structuredClone(scripts); },
@@ -148,6 +156,10 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     initialized: initialized.promise, detached: detached.promise,
     release() { gate.resolve(); },
     failNextGlobalUpdate() { failDynamic = true; },
+    allowUserScripts() { userScriptsAuthorized = true; },
+    failNextUserScriptWrite() { failUserScriptWrite = true; },
+    get userScripts() { return structuredClone(userScripts); },
+    get contentScripts() { return structuredClone(contentScripts); },
     fire(name) { for (const listener of events[name] ?? []) listener(); },
     request(message, sender = {}) {
       return new Promise(resolve => {
@@ -321,5 +333,40 @@ test("CDP and the synchronous bootstrap compute the same session-jittered coordi
     assert.notEqual(params.longitude, profile.longitude);
   } finally {
     h.release();
+  }
+});
+
+test("background recheck sees newly granted User Scripts access and uses queued, current settings", async () => {
+  const h = harness({ userScriptsAuthorized: false });
+  await promptly(h.initialized);
+  assert.deepEqual(h.userScripts, []);
+  assert.deepEqual(h.contentScripts, []);
+  assert.equal((await h.request({ type: "getPopupState", url: "https://example.com/" })).value.earlyBootstrapAvailable, false);
+  assert.equal((await h.request({ type: "recheckContentBootstrap" })).value, false);
+  h.allowUserScripts();
+  const save = h.request({ type: "setGlobalEnabled", enabled: false });
+  const recheck = h.request({ type: "recheckContentBootstrap", settings: { enabled: true } });
+  assert.equal((await promptly(save)).ok, true);
+  assert.equal((await promptly(recheck)).value, true);
+  assert.equal(h.bootstrap.settings.enabled, false);
+  assert.match(h.bootstrap.sessionSalt, /^[a-f0-9]{32}$/);
+  assert.equal(h.userScripts[0].world, "MAIN");
+  assert.equal(h.userScripts[0].runAt, "document_start");
+  assert.equal(h.userScripts[0].js[1].file, "page-main.js");
+});
+
+test("authorized bootstrap write failure rejects save and preserves the previous script", async () => {
+  for (const initialAccess of [true, false]) {
+    const h = harness({ userScriptsAuthorized: initialAccess });
+    await promptly(h.initialized);
+    const previous = h.userScripts;
+    h.allowUserScripts();
+    h.failNextUserScriptWrite();
+    const result = await promptly(h.request({ type: "setGlobalEnabled", enabled: false }));
+    assert.equal(result.ok, false);
+    assert.equal(h.local["ghost.settings"].enabled, true);
+    assert.equal(h.bootstrap.settings.enabled, true);
+    assert.equal(h.calls.some(call => call.type === "unregister-user-script"), false);
+    if (initialAccess) assert.deepEqual(h.userScripts, previous);
   }
 });

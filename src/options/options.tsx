@@ -56,7 +56,7 @@ import {
   sameHeliumSurfaces,
   type HeliumFlagDetection
 } from "../shared/helium-detect";
-import { isSynchronousContentBootstrapAvailable, openUserScriptsSettingsPage, repairContentBootstrap } from "../background/bootstrap";
+import { isSynchronousContentBootstrapAvailable, openUserScriptsSettingsPage } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
 import { localizeDocument, t } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
@@ -256,7 +256,7 @@ function OptionsApp(): React.ReactElement {
         setSettings(nextSettings);
         setSavedSettings(nextSettings);
         setAutomaticLocationSavedEnabled(nextSettings.automaticLocationEnabled);
-        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings));
+        setSynchronousProtectionAvailable(await sendMessage<boolean>({ type: "recheckContentBootstrap" }));
         const result = await runDetection();
         if (result && nextSettings.heliumFlagSync && !sameHeliumSurfaces(nextSettings, applyHeliumFlagDetection(nextSettings, result))) {
           await syncDetectedFlags(result);
@@ -353,7 +353,7 @@ function OptionsApp(): React.ReactElement {
       // The background reply already includes successful global registration.
       // Do not re-register an older payload from this UI or hold the save
       // spinner for another registration round-trip.
-      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable);
+      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable).catch(() => setSynchronousProtectionAvailable(false));
       flashToast(t("saved"), "success");
     } catch (error) {
       flashToast(errorText(error), "error");
@@ -375,7 +375,7 @@ function OptionsApp(): React.ReactElement {
       setSettings(normalized);
       setSavedSettings(normalized);
       setAutomaticLocationSavedEnabled(normalized.automaticLocationEnabled);
-      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable);
+      void isSynchronousContentBootstrapAvailable().then(setSynchronousProtectionAvailable).catch(() => setSynchronousProtectionAvailable(false));
       flashToast(t("resetDone"), "success");
     } catch (error) {
       flashToast(errorText(error), "error");
@@ -1104,12 +1104,4 @@ function sendMessage<T = unknown>(message: RuntimeRequest): Promise<T> {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function repairContentBootstrapBestEffort(settings: GhostSettings): Promise<boolean> {
-  try {
-    return await repairContentBootstrap(settings);
-  } catch {
-    return false;
-  }
 }
