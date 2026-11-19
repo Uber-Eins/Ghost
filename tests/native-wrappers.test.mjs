@@ -136,6 +136,7 @@ const setup = `
     snapshot(Intl[name], 'Intl.' + name);
   }
   snapshot(Intl, 'Intl');
+  var nativeToLocaleString = Date.prototype.toLocaleString;
   var NativeDate = Date, nativeDateNow = Date.now, nativeDateUTC = Date.UTC, nativeDateParse = Date.parse;
   var navigatorKeys = Reflect.ownKeys(navigator), screenKeys = Reflect.ownKeys(screen);
 `;
@@ -469,4 +470,39 @@ test("document.fonts inherits native-masked wrappers without own methods", async
   assert.equal(h.run('document.fonts.check("16px sans-serif")'), true);
   assert.deepEqual(Array.from(await h.run('document.fonts.load("16px Microsoft YaHei")')), []);
   assert.deepEqual(Array.from(await h.run('document.fonts.load("16px sans-serif")')), ["native face"]);
+});
+
+test("Intl and Date locale methods read options in native order with their original receiver", () => {
+  const h = page();
+  assert.equal(h.run(`(() => {
+    const seen = [];
+    const options = Object.create({ get timeZone() { seen.push('timeZone'); if (this !== options) throw Error('receiver'); return 'UTC'; } }, {
+      hour: { value: 'numeric' },
+      hourCycle: { get() { seen.push('hourCycle'); return 'h23'; } },
+      irrelevant: { enumerable: true, get() { throw Error('unexpected getter'); } }
+    });
+    const native = new nativeIntl.DateTimeFormat('ja-JP', options).resolvedOptions();
+    const nativeOrder = seen.splice(0).join(',');
+    const wrapped = new Intl.DateTimeFormat(undefined, options).resolvedOptions();
+    if (JSON.stringify(native) !== JSON.stringify(wrapped) || nativeOrder !== seen.splice(0).join(',')) return false;
+    const date = new Date(0);
+    if (nativeToLocaleString.call(date, 'ja-JP', options) !== date.toLocaleString(undefined, options)) return false;
+    return new Intl.NumberFormat(undefined, Object.create({ minimumFractionDigits: 3 })).resolvedOptions().minimumFractionDigits === 3 &&
+      new Intl.DateTimeFormat(undefined, Object.freeze({ timeZone: undefined })).resolvedOptions().timeZone === 'Asia/Tokyo';
+  })()`), true);
+  for (const expression of [
+    "new Intl.DateTimeFormat(undefined, null)", "new Intl.DateTimeFormat(null)",
+    "new Intl.Segmenter(undefined, 1)", "new Date(0).toLocaleDateString(undefined, null)",
+    "new Date(0).toLocaleString(null)"
+  ]) assert.throws(() => h.run(expression), { name: "TypeError" });
+  for (const expression of ["new Intl.DateTimeFormat(undefined, {timeZone: null})", "new Date(0).toLocaleTimeString(undefined, {timeZone: null})"]) {
+    assert.throws(() => h.run(expression), { name: "RangeError" });
+  }
+});
+
+test("Ghost retains the injected locale where native negotiation drops the profile's region", () => {
+  const h = page();
+  assert.equal(h.run("new nativeIntl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
+  assert.equal(h.run("new Intl.PluralRules().resolvedOptions().locale"), "ja-JP");
+  assert.equal(h.run("new Intl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
 });
