@@ -7,7 +7,6 @@ import { getSessionSalt } from "./session-seed";
 import { stableSeed } from "../shared/hash";
 import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetection, sameHeliumSurfaces } from "../shared/helium-detect";
 import type { HeliumFlagDetection } from "../shared/helium-detect";
-import { sameAutomaticLocation } from "../shared/automatic-location";
 import { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl, unsupportedPageLabel } from "../shared/internal";
 import { findProfile } from "../shared/profiles";
 import { bestMatchingSiteRule, DEFAULT_SITE_RULE, exclusionsForSiteToggle, isExcludedUrl, normalizeSiteRuleKey, siteKeyFromUrl } from "../shared/site";
@@ -178,7 +177,7 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
     case "options.saveState": {
       const settings = await mutateAndRefresh((draft) => {
         const normalized = normalizeSettings(message.settings);
-        Object.assign(draft, normalized);
+        Object.assign(draft, normalized, { automaticLocation: draft.automaticLocation });
       });
       if (settings.automaticLocationEnabled) {
         runBackgroundTask(synchronizeAutomaticLocation(true));
@@ -520,7 +519,7 @@ async function scheduleAutomaticLocationAlarm(settings: GhostSettings): Promise<
 async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettings> {
   // Network I/O is deliberately kept outside settingsApplicationQueue. That
   // queue covers commits/global protection, not tab fan-outs or network I/O.
-  const settings = await readSettings();
+  const settings = await readAppliedSettings();
   if (!settings.automaticLocationEnabled) {
     return settings;
   }
@@ -536,34 +535,15 @@ async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettin
   }
 
   automaticLocationRefresh = fetchAutomaticLocation()
-    .then((location) => applyAutomaticLocationNow(location))
+    .then((location) => enqueueSettingsApplication(async () => {
+      const current = await readSettings();
+      if (!current.automaticLocationEnabled) return current;
+      return mutateAndRefreshNow((draft) => { draft.automaticLocation = location; });
+    }))
     .finally(() => {
       automaticLocationRefresh = null;
     });
   return automaticLocationRefresh;
-}
-
-async function applyAutomaticLocationNow(location: NonNullable<GhostSettings["automaticLocation"]>): Promise<GhostSettings> {
-  let effectiveLocationChanged = false;
-  const settings = await updateSettings((draft) => {
-    if (!draft.automaticLocationEnabled) {
-      return;
-    }
-    effectiveLocationChanged = !sameAutomaticLocation(draft.automaticLocation, location);
-    draft.automaticLocation = location;
-  });
-  if (effectiveLocationChanged) {
-    settingsRevision += 1;
-    // Persisting the detected result completes the refresh request. Reapplying
-    // it to every open tab continues in the background instead of blocking all
-    // runtime messages and the options page.
-    runBackgroundTask(enqueueSettingsApplication(async () => {
-      // A UI commit may already be queued. Read its latest stored result here
-      // rather than replaying an older location-refresh snapshot over it.
-      await refreshAfterSettingsChange(await readSettings());
-    }));
-  }
-  return settings;
 }
 
 // The service worker can probe WebGL and client hints itself; the measureText

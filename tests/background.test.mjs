@@ -27,7 +27,7 @@ async function promptly(promise) {
   }
 }
 
-function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, userScriptsAuthorized = true, session = {} } = {}) {
+function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, userScriptsAuthorized = true, fetch, session = {} } = {}) {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, heliumFlagSync: false });
   const local = { "ghost.settings": settings };
   const events = {};
@@ -43,6 +43,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   let dynamicRules = [];
   let sessionRules = [];
   let failDynamic = false;
+  let nextDynamicGate;
   let failUserScriptWrite = false;
   const attached = new Set();
   const event = name => ({
@@ -136,6 +137,9 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
       },
       async getDynamicRules() { return structuredClone(dynamicRules); },
       async updateDynamicRules({ removeRuleIds = [], addRules = [] }) {
+        const pause = nextDynamicGate;
+        nextDynamicGate = undefined;
+        if (pause) await pause();
         if (failDynamic) {
           failDynamic = false;
           throw new Error("forced global header failure");
@@ -146,7 +150,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     }
   };
   const context = vm.createContext({
-    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto,
+    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto, fetch, AbortController,
     navigator: { userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" },
     console: { error(...args) { errors.push(args.map(String).join(" ")); } }
   });
@@ -156,6 +160,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     initialized: initialized.promise, detached: detached.promise,
     release() { gate.resolve(); },
     failNextGlobalUpdate() { failDynamic = true; },
+    gateNextGlobalUpdate(pause) { nextDynamicGate = pause; },
     allowUserScripts() { userScriptsAuthorized = true; },
     failNextUserScriptWrite() { failUserScriptWrite = true; },
     get userScripts() { return structuredClone(userScripts); },
@@ -369,4 +374,68 @@ test("authorized bootstrap write failure rejects save and preserves the previous
     assert.equal(h.calls.some(call => call.type === "unregister-user-script"), false);
     if (initialAccess) assert.deepEqual(h.userScripts, previous);
   }
+});
+
+const ipLocation = {
+  ip: "203.0.113.231", timezone: "Asia/Taipei", latitude: 25.033, longitude: 121.5654,
+  countryCode: "TW", country: "Taiwan", region: "Taipei", city: "Taipei"
+};
+const locationResponse = () => ({ ok: true, json: async () => ipLocation });
+
+test("enabling automatic location fetches and applies the sanitized cache, which a stale options save cannot overwrite", async () => {
+  const requests = [];
+  const h = harness({ fetch: async url => { requests.push(url); return locationResponse(); } });
+  await promptly(h.initialized);
+  h.fire("startup");
+  const disabled = await promptly(h.request({ type: "options.refreshAutomaticLocation" }));
+  assert.equal(disabled.ok, true);
+  assert.deepEqual(requests, []);
+  const staleOptions = { ...h.local["ghost.settings"], automaticLocationEnabled: true };
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: staleOptions }))).ok, true);
+  const refreshed = await promptly(h.request({ type: "options.refreshAutomaticLocation" }));
+  assert.equal(refreshed.ok, true, refreshed.error);
+  assert.equal(requests[0], "https://my.ippure.com/v1/info");
+  const saved = await promptly(h.request({
+    type: "options.saveState", settings: { ...staleOptions, automaticLocationEnabled: false, advancedEnabled: false }
+  }));
+  assert.equal(saved.value.automaticLocation.timezoneId, "Asia/Taipei", "options cannot replace background-owned data");
+  const cache = structuredClone(refreshed.value.automaticLocation);
+  assert.deepEqual(h.local["ghost.settings"].automaticLocation, cache);
+  assert.equal(JSON.stringify(h.local).includes(ipLocation.ip), false);
+
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: {
+    ...staleOptions, advancedEnabled: false
+  } }))).ok, true);
+  const reply = await promptly(h.request({ type: "resolveProfile", url: "https://example.com/" }, { url: "https://example.com/" }));
+  const { timezoneId, latitude, longitude } = reply.value.profile;
+  assert.deepEqual({ timezoneId, latitude, longitude }, { timezoneId: "Asia/Taipei", latitude: 25.033, longitude: 121.5654 });
+  assert.equal(h.bootstrap.settings.automaticLocation.timezoneId, "Asia/Taipei");
+});
+
+test("a location result queues behind a failing save and merges into the rolled-back settings", async () => {
+  const fetching = deferred(), response = deferred(), applying = deferred(), release = deferred();
+  const h = harness({ fetch: async () => { fetching.resolve(); return response.promise; } });
+  await promptly(h.initialized);
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: {
+    ...h.local["ghost.settings"], automaticLocationEnabled: true
+  } }))).ok, true);
+  const location = h.request({ type: "options.refreshAutomaticLocation" });
+  await promptly(fetching.promise);
+  h.failNextGlobalUpdate();
+  h.gateNextGlobalUpdate(async () => { applying.resolve(); await release.promise; });
+  const save = h.request({ type: "setGlobalEnabled", enabled: false });
+  try {
+    await promptly(applying.promise);
+    response.resolve(locationResponse());
+    await new Promise(setImmediate);
+    assert.equal(h.local["ghost.settings"].automaticLocation, null);
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await promptly(save)).ok, false);
+  const refreshed = await promptly(location);
+  assert.equal(refreshed.ok, true, refreshed.error);
+  assert.equal(h.local["ghost.settings"].enabled, true);
+  assert.equal(h.bootstrap.settings.enabled, true);
+  assert.equal(h.bootstrap.settings.automaticLocation.timezoneId, "Asia/Taipei");
 });

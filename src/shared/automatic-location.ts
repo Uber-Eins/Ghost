@@ -126,16 +126,6 @@ export function applyAutomaticLocation(
   };
 }
 
-export function sameAutomaticLocation(left: AutomaticLocation | null, right: AutomaticLocation | null): boolean {
-  if (!left || !right) {
-    return left === right;
-  }
-  return left.timezoneId === right.timezoneId
-    && left.latitude === right.latitude
-    && left.longitude === right.longitude
-    && left.countryCode === right.countryCode;
-}
-
 export function automaticLocaleForLocation(location: AutomaticLocation): string | null {
   const locationLocale = locationPresetForTimezone(location.timezoneId)?.locale;
   const candidate = COUNTRY_LOCALES[location.countryCode] ?? locationLocale;
