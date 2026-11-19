@@ -33,10 +33,10 @@ export async function refreshContentBootstrap(settings: GhostSettings, sessionSa
   return true;
 }
 
-function pageMainRegistrations(userScripts: typeof chrome.userScripts | undefined) {
+async function pageMainRegistrations(userScripts: typeof chrome.userScripts | undefined) {
   try {
-    // Without authorization Chromium either hides the API or throws on invocation.
-    return userScripts?.getScripts({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
+    // Without authorization Chromium can hide the API, throw, or reject the call.
+    return await userScripts?.getScripts({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
   } catch {
     return undefined;
   }

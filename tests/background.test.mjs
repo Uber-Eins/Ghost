@@ -44,6 +44,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   let sessionRules = [];
   let failDynamic = false;
   let nextDynamicGate;
+  let rejectUserScriptRead = false;
   let failUserScriptWrite = false;
   const attached = new Set();
   const event = name => ({
@@ -57,7 +58,10 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     }
   });
   const userScriptsApi = {
-    async getScripts() { return structuredClone(userScripts); },
+    async getScripts() {
+      if (rejectUserScriptRead) throw new Error("User Scripts access is not allowed");
+      return structuredClone(userScripts);
+    },
     async register(scripts) { await this.update(scripts); },
     async update(scripts) {
       if (failUserScriptWrite) {
@@ -162,6 +166,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     failNextGlobalUpdate() { failDynamic = true; },
     gateNextGlobalUpdate(pause) { nextDynamicGate = pause; },
     allowUserScripts() { userScriptsAuthorized = true; },
+    revokeUserScriptsAccess() { rejectUserScriptRead = true; },
     failNextUserScriptWrite() { failUserScriptWrite = true; },
     get dynamicRules() { return structuredClone(dynamicRules); },
     get userScripts() { return structuredClone(userScripts); },
@@ -295,6 +300,25 @@ test("a pending per-tab header update does not block global protection commits",
 });
 
 
+test("a profile reply uses the latest settings if a save completes during its tab header update", async () => {
+  const h = harness({ blockSessionRules: true });
+  await promptly(h.initialized);
+  // IPv6 uses tab-scoped rules, unlike the ordinary tab from startup fan-out.
+  const url = "http://[::1]:8765/";
+  const pending = h.request({ type: "resolveProfile", url }, { url, frameId: 0, tab: { id: 8, url } });
+  try {
+    await promptly(h.blocked);
+    const save = await promptly(h.request({ type: "setGlobalEnabled", enabled: false }));
+    assert.equal(save.ok, true, save.error);
+  } finally {
+    h.release();
+  }
+  const reply = await promptly(pending);
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.value.enabled, false);
+  assert.equal(reply.value.reason, "global-disabled");
+});
+
 test("session noise salt is created once and reused across worker restarts and settings saves", async () => {
   const first = harness();
   await promptly(first.initialized);
@@ -359,6 +383,22 @@ test("background recheck sees newly granted User Scripts access and uses queued,
   assert.equal(h.userScripts[0].world, "MAIN");
   assert.equal(h.userScripts[0].runAt, "document_start");
   assert.equal(h.userScripts[0].js[1].file, "page-main.js");
+});
+
+test("an asynchronous User Scripts authorization rejection leaves saves working but unprotected", async () => {
+  const h = harness();
+  const url = "https://example.com/";
+  await promptly(h.initialized);
+  assert.equal((await promptly(h.request({ type: "getPopupState", url }))).value.earlyBootstrapAvailable, true);
+  h.revokeUserScriptsAccess();
+
+  const save = await promptly(h.request({ type: "setSiteProfile", siteKey: "example.com", profileId: "tokyo-ja-jp" }));
+  assert.equal(save.ok, true, save.error);
+  assert.equal(h.local["ghost.settings"].siteProfiles["example.com"], "tokyo-ja-jp");
+  assert.deepEqual(h.contentScripts, []);
+  const popup = await promptly(h.request({ type: "getPopupState", url }));
+  assert.equal(popup.ok, true, popup.error);
+  assert.equal(popup.value.earlyBootstrapAvailable, false);
 });
 
 test("authorized bootstrap write failure rejects save and preserves the previous script", async () => {

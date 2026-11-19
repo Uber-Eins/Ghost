@@ -210,27 +210,24 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   const sessionSalt = await getSessionSalt();
-  const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
   const revision = settingsRevision;
+  const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
   const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings, sessionSalt);
 
-  if (tabId !== null && tabRevision === currentTabOverrideRevision(tabId)) {
-    await refreshTabHeaderRule(tabId, resolved, settings, () => (
-      revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
-    ));
+  if (tabId !== null) {
+    const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
+    if (isCurrent()) {
+      await refreshTabHeaderRule(tabId, resolved, settings, isCurrent);
+    }
+    // The synchronous bootstrap/page profile is already usable. Do not hold
+    // its reply behind a paused or unresponsive debugger target. Advanced
+    // metadata stays unapplied in this reply; it is not a completion report.
+    runBackgroundTask(refreshAdvancedOverrideForTab(tabId, resolved, settings, isCurrent));
   }
 
   if (revision !== settingsRevision) {
     return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
   }
-
-  if (tabId !== null) {
-    // The synchronous bootstrap/page profile is already usable. Do not hold
-    // its reply behind a paused or unresponsive debugger target. Advanced
-    // metadata stays unapplied in this reply; it is not a completion report.
-    runBackgroundTask(refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision));
-  }
-
   return resolved;
 }
 
@@ -261,10 +258,9 @@ async function refreshAdvancedOverrideForTab(
   tabId: number,
   resolved: ReturnType<typeof resolveProfile>,
   settings: GhostSettings,
-  tabRevision: number
+  isCurrent: () => boolean
 ): Promise<void> {
-  const revision = settingsRevision;
-  const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
+  if (!isCurrent()) return;
   if (resolved.enabled && settings.advancedEnabled) {
     await applyAdvancedOverrides(tabId, resolved.profile, resolved.seed, isCurrent);
   } else {
@@ -294,13 +290,9 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
     return;
   }
   const resolved = resolveFrameProfile(url, url, settings, sessionSalt);
-  await refreshTabHeaderRule(tabId, resolved, settings, () => (
-    revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
-  ));
-  if (revision !== settingsRevision) {
-    return;
-  }
-  await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
+  const overridesCurrent = () => revision === settingsRevision && isCurrent();
+  await refreshTabHeaderRule(tabId, resolved, settings, overridesCurrent);
+  await refreshAdvancedOverrideForTab(tabId, resolved, settings, overridesCurrent);
 }
 
 async function getPopupState(url: string): Promise<PopupState> {
@@ -531,10 +523,7 @@ async function refreshKnownTabOverrides(settings: GhostSettings, revision: numbe
       return;
     }
     await refreshTabHeaderRule(tabId, resolved, settings, isCurrent);
-    if (!isCurrent()) {
-      return;
-    }
-    await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
+    await refreshAdvancedOverrideForTab(tabId, resolved, settings, isCurrent);
   }));
 }
 
