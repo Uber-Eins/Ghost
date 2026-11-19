@@ -210,8 +210,8 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
   }
 
   const sessionSalt = await getSessionSalt();
-  const revision = settingsRevision;
   const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
+  const revision = settingsRevision;
   const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings, sessionSalt);
 
   if (tabId !== null) {
