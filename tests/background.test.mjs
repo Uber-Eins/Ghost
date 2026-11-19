@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
-import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
 
 const background = readFileSync(new URL("../dist/advanced/background.js", import.meta.url), "utf8");
 
@@ -307,4 +307,19 @@ test("session noise salt is created once and reused across worker restarts and s
   assert.deepEqual(first.errors, []);
   assert.deepEqual(restarted.errors, []);
   assert.deepEqual(nextSession.errors, []);
+});
+
+test("CDP and the synchronous bootstrap compute the same session-jittered coordinates", async () => {
+  const h = harness({ blockDebugger: true });
+  try {
+    await promptly(h.blocked);
+    const { settings, sessionSalt } = h.bootstrap;
+    const { profile, seed } = resolveProfile("https://example.com/", settings, Date.now(), undefined, sessionSalt);
+    const params = structuredClone(h.calls.find(call => call.method === "Emulation.setGeolocationOverride").params);
+    assert.deepEqual(params, effectiveGeolocation(profile, seed));
+    assert.notEqual(params.latitude, profile.latitude);
+    assert.notEqual(params.longitude, profile.longitude);
+  } finally {
+    h.release();
+  }
 });

@@ -32,6 +32,7 @@ export {
 export {
   allProfiles,
   cloneProfile,
+  effectiveGeolocation,
   appVersionForProfile,
   navigatorPlatformForProfile,
   navigatorVendorForProfile,

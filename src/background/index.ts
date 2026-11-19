@@ -290,7 +290,7 @@ async function refreshAdvancedOverrideForTab(
   }
   let result: AdvancedResult;
   if (resolved.enabled && settings.advancedEnabled) {
-    result = await applyAdvancedOverrides(tabId, resolved.profile, isCurrent);
+    result = await applyAdvancedOverrides(tabId, resolved.profile, resolved.seed, isCurrent);
   } else {
     await clearAdvancedOverrides(tabId, isCurrent);
     result = { attempted: false, applied: false };
@@ -315,10 +315,11 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
 
   const settings = await readAppliedSettings();
   const revision = settingsRevision;
+  const sessionSalt = await getSessionSalt();
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
-  const resolved = resolveProfile(url, settings);
+  const resolved = resolveFrameProfile(url, url, settings, sessionSalt);
   await refreshTabHeaderRule(tabId, resolved, settings, () => (
     revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
   ));
@@ -596,6 +597,7 @@ async function refreshKnownTabOverrides(settings: GhostSettings, refreshRevision
   if (!chrome.tabs?.query) {
     return;
   }
+  const sessionSalt = await getSessionSalt();
   const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URL_PATTERNS }).catch(() => []);
   await Promise.all(tabs.map(async (tab) => {
     if (refreshRevision !== settingsRefreshRevision) {
@@ -609,7 +611,7 @@ async function refreshKnownTabOverrides(settings: GhostSettings, refreshRevision
     const isCurrent = () => (
       refreshRevision === settingsRefreshRevision && tabRevision === currentTabOverrideRevision(tabId)
     );
-    const resolved = resolveProfile(tab.url, settings);
+    const resolved = resolveFrameProfile(tab.url, tab.url, settings, sessionSalt);
     if (!isCurrent()) {
       return;
     }

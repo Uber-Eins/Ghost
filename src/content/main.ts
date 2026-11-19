@@ -7,7 +7,7 @@ import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts"
 import { strictModeForBlobParts } from "../shared/worker-blob";
 import { workerIdentityPrelude as buildWorkerIdentityPrelude } from "../shared/worker-prelude";
 import { isSupportedPageUrl } from "../shared/internal";
-import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
+import { appVersionForProfile, effectiveGeolocation, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import { installTimePatches } from "../shared/time-patch";
 import { normalizeSettings, resolveProfile } from "../shared/storage";
@@ -75,7 +75,6 @@ if (existingController) {
   break ghostControllerInitialization;
 }
 
-const NativeDate = Date;
 const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "language",
   "languages",
@@ -87,7 +86,6 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "deviceMemory"
 ]);
 const nativeNavigator = snapshotNavigator();
-const nativeGeolocation = navigator.geolocation;
 // A related about:blank/srcdoc frame or popup has no bootstrap settings. When
 // the page that created it runs Ghost, report what that page reports instead
 // of the fallback profile.
@@ -1270,56 +1268,65 @@ function buildUserAgentData(): object | undefined {
 }
 
 function patchGeolocation(): void {
-  const watches = new Map<number, { nativeId?: number; timer?: number }>();
-  let watchId = 1;
-  const nativeGeolocationPrototype = window.Geolocation?.prototype;
-  const geolocationMethods = {
-    getCurrentPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
-      if (!state.enabled && nativeGeolocation) {
-        return nativeGeolocation.getCurrentPosition.call(nativeGeolocation, success, error, options);
-      }
-      queueMicrotask(() => success(buildPosition()));
-      return undefined;
-    },
-    watchPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
-      const id = watchId;
-      watchId += 1;
-      if (!state.enabled && nativeGeolocation) {
-        const nativeId = nativeGeolocation.watchPosition.call(nativeGeolocation, success, error, options);
-        watches.set(id, { nativeId });
-        return id;
-      }
-      queueMicrotask(() => success(buildPosition()));
-      const timer = window.setInterval(() => success(buildPosition()), Math.max(options?.maximumAge ?? 30000, 1000));
-      watches.set(id, { timer });
-      return id;
-    },
-    clearWatch(id: number) {
-      const watch = watches.get(id);
-      if (!watch) {
-        return;
-      }
-      if (watch.nativeId !== undefined && nativeGeolocation) {
-        nativeGeolocation.clearWatch.call(nativeGeolocation, watch.nativeId);
-      }
-      if (watch.timer !== undefined) {
-        window.clearInterval(watch.timer);
-      }
-      watches.delete(id);
-    }
+  const globals = window as Window & {
+    GeolocationCoordinates?: { prototype: GeolocationCoordinates };
+    GeolocationPosition?: { prototype: GeolocationPosition };
   };
-  // Present a real Geolocation-shaped object: native prototype for the
-  // toString tag, own methods that print as native code.
-  const geolocation = Object.create(nativeGeolocationPrototype ?? Object.prototype) as Geolocation;
-  for (const name of ["getCurrentPosition", "watchPosition", "clearWatch"] as const) {
-    Object.defineProperty(geolocation, name, {
-      configurable: true,
-      writable: true,
-      value: maskAsNative(wrapNativeMethod(nativeGeolocationPrototype?.[name], geolocationMethods[name]), nativeGeolocationPrototype?.[name])
-    });
+  const coordsPrototype = globals.GeolocationCoordinates?.prototype;
+  const positionPrototype = globals.GeolocationPosition?.prototype;
+  const geolocationPrototype = window.Geolocation?.prototype;
+  if (!coordsPrototype || !positionPrototype || !geolocationPrototype) {
+    return;
   }
 
-  defineNavigatorGetter("geolocation", () => geolocation);
+  const coords = Object.getOwnPropertyDescriptor(positionPrototype, "coords")?.get;
+  if (!coords) return;
+  const coordinateKeys = ["latitude", "longitude", "accuracy", "altitude", "altitudeAccuracy", "heading", "speed"] as const;
+  const getters = coordinateKeys.map((key) => Object.getOwnPropertyDescriptor(coordsPrototype, key));
+  if (getters.some((descriptor) => !descriptor?.configurable || !descriptor.get)) {
+    return;
+  }
+  const coordinates = new WeakMap<GeolocationCoordinates, Record<typeof coordinateKeys[number], number | null>>();
+  // Keep the browser's branded objects; only their reported coordinate fields change.
+  for (const [index, key] of coordinateKeys.entries()) {
+    const descriptor = getters[index]!;
+    const native = descriptor.get!;
+    Object.defineProperty(coordsPrototype, key, {
+      ...descriptor,
+      get: maskAsNative(wrapNative(native, (target, receiver, args) => {
+        const replacement = coordinates.get(receiver);
+        return replacement ? replacement[key] : Reflect.apply(target, receiver, args);
+      }), native)
+    });
+  }
+  for (const prototype of [coordsPrototype, positionPrototype]) {
+    const native = prototype.toJSON;
+    if (typeof native !== "function") continue;
+    defineMethod(prototype, "toJSON", maskAsNative(wrapNative(native, (target, receiver, args) => {
+      const json = Reflect.apply(target, receiver, args);
+      const replacement = coordinates.get(prototype === coordsPrototype ? receiver : coords.call(receiver));
+      if (replacement) Object.assign(prototype === coordsPrototype ? json : json.coords, replacement);
+      return json;
+    }), native));
+  }
+  for (const name of ["getCurrentPosition", "watchPosition"] as const) {
+    const native = geolocationPrototype[name];
+    defineMethod(geolocationPrototype, name, maskAsNative(wrapNative(native, (target, receiver, args) => {
+      const success = args[0];
+      if (typeof success === "function") {
+        args[0] = function (this: unknown, position: GeolocationPosition) {
+          if (state.enabled) {
+            coordinates.set(coords.call(position), {
+              ...effectiveGeolocation(state.profile, state.seed),
+              altitude: null, altitudeAccuracy: null, heading: null, speed: null
+            });
+          }
+          return Reflect.apply(success, this, [position]);
+        };
+      }
+      return Reflect.apply(target, receiver, args);
+    }), native));
+  }
 }
 
 function patchFontFaceSet(): void {
@@ -1349,49 +1356,6 @@ function patchFontFaceSet(): void {
     defineMethod(fontSet, "check", patchedCheck);
     defineMethod(fontSet, "load", patchedLoad);
   }
-}
-
-function buildPosition(): GeolocationPosition {
-  const geolocationGlobal = window as unknown as {
-    GeolocationCoordinates?: { prototype: { toJSON?: Function } };
-    GeolocationPosition?: { prototype: { toJSON?: Function } };
-  };
-  const nativeCoordinatesToJSON = geolocationGlobal.GeolocationCoordinates?.prototype.toJSON;
-  const nativePositionToJSON = geolocationGlobal.GeolocationPosition?.prototype.toJSON;
-  const jitterLat = stableNumber(`${state.seed}:geo:lat`, -0.00015, 0.00015);
-  const jitterLon = stableNumber(`${state.seed}:geo:lon`, -0.00015, 0.00015);
-  return {
-    coords: {
-      latitude: Math.max(-90, Math.min(90, state.profile.latitude + jitterLat)),
-      longitude: Math.max(-180, Math.min(180, state.profile.longitude + jitterLon)),
-      accuracy: state.profile.accuracy,
-      altitude: null,
-      altitudeAccuracy: null,
-      heading: null,
-      speed: null,
-      toJSON: maskAsNative(wrapNativeMethod(nativeCoordinatesToJSON, {
-        toJSON(this: GeolocationCoordinates) {
-          // Match geolocation_coordinates.cc::toJSON's observable key order,
-          // which differs from the attribute order in Chromium's IDL.
-          return {
-            accuracy: this.accuracy,
-            latitude: this.latitude,
-            longitude: this.longitude,
-            altitude: this.altitude,
-            altitudeAccuracy: this.altitudeAccuracy,
-            heading: this.heading,
-            speed: this.speed
-          };
-        }
-      }.toJSON), nativeCoordinatesToJSON)
-    },
-    timestamp: NativeDate.now(),
-    toJSON: maskAsNative(wrapNativeMethod(nativePositionToJSON, {
-      toJSON(this: GeolocationPosition) {
-        return { timestamp: this.timestamp, coords: this.coords.toJSON() };
-      }
-    }.toJSON), nativePositionToJSON)
-  };
 }
 
 function patchCanvas(): void {

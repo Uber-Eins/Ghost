@@ -544,8 +544,8 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     const firstProfile = { ...PRESET_PROFILES[0], userAgent: "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36" };
     const secondProfile = { ...PRESET_PROFILES[1], userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" };
     const [first, second] = await Promise.all([
-      applyAdvancedOverrides(7, firstProfile),
-      applyAdvancedOverrides(7, secondProfile)
+      applyAdvancedOverrides(7, firstProfile, "test-seed"),
+      applyAdvancedOverrides(7, secondProfile, "test-seed")
     ]);
     assert.equal(first.applied, true);
     assert.equal(second.applied, true);
@@ -554,17 +554,17 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     assert.deepEqual(userAgentCalls, []);
     assert.deepEqual(calls.filter((call) => call.method.startsWith("Runtime.")), []);
 
-    const reset = await applyAdvancedOverrides(7, secondProfile);
+    const reset = await applyAdvancedOverrides(7, secondProfile, "test-seed");
     assert.equal(reset.applied, true);
     assert.equal(attachCount, 1);
 
     failMethod = "Emulation.setTimezoneOverride";
-    const failed = await applyAdvancedOverrides(7, firstProfile);
+    const failed = await applyAdvancedOverrides(7, firstProfile, "test-seed");
     assert.equal(failed.applied, false);
     assert.match(failed.error, /forced/);
     assert.equal(attached, false);
 
-    const recovered = await applyAdvancedOverrides(7, firstProfile);
+    const recovered = await applyAdvancedOverrides(7, firstProfile, "test-seed");
     assert.equal(recovered.applied, true);
     await clearAdvancedOverrides(7);
     assert.equal(attached, false);

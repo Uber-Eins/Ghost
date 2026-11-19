@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
 import vm from "node:vm";
-import { DEFAULT_SETTINGS, normalizeSettings } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
 
 const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
 const pageRelated = readFileSync(new URL("../dist/advanced/page-related.js", import.meta.url), "utf8");
@@ -39,16 +39,40 @@ const setup = `
   nativeMethod(NavigatorUAData.prototype, 'getHighEntropyValues', { async getHighEntropyValues(hints) { return {}; } }.getHighEntropyValues);
   nativeMethod(NavigatorUAData.prototype, 'toJSON', { toJSON() { return {}; } }.toJSON);
   var uaData = new NavigatorUAData();
-  var Geolocation = class Geolocation {};
-  for (const [name, fn] of Object.entries({ getCurrentPosition(success, error, options) {}, watchPosition(success, error, options) { return 1; }, clearWatch(id) {} })) nativeMethod(Geolocation.prototype, name, fn);
-  var GeolocationCoordinates = class GeolocationCoordinates {};
+  var Geolocation = class Geolocation {}, geo = new Geolocation(), geoCalls = [], watchCallback;
+  var geoMode = 'success', geoError = { code: 1 }, watchId = 47;
+  function readPosition(receiver, success, error, options) {
+    if (receiver !== geo || typeof success !== 'function') throw new TypeError('Illegal invocation');
+    geoCalls.push({ success, error, options });
+    if (geoMode === 'success') queueMicrotask(() => success(nativePosition));
+    else queueMicrotask(() => error(geoError));
+  }
+  nativeMethod(Geolocation.prototype, 'getCurrentPosition', { getCurrentPosition(success, error, options) {
+    readPosition(this, success, error, options);
+  } }.getCurrentPosition);
+  nativeMethod(Geolocation.prototype, 'watchPosition', { watchPosition(success, error, options) {
+    readPosition(this, success, error, options); watchCallback = success; return watchId;
+  } }.watchPosition);
+  nativeMethod(Geolocation.prototype, 'clearWatch', { clearWatch(id) {
+    if (this !== geo) throw new TypeError('Illegal invocation');
+    if (id === watchId) watchCallback = undefined;
+  } }.clearWatch);
+  var GeolocationCoordinates = class GeolocationCoordinates {}, nativeCoords = new GeolocationCoordinates();
+  var coordsData = { accuracy: 2, latitude: 1, longitude: 2, altitude: 3, altitudeAccuracy: 4, heading: 5, speed: 6 };
+  var coordsBrand = new WeakSet([nativeCoords]);
+  for (const key of Object.keys(coordsData)) nativeGetter(GeolocationCoordinates.prototype, key, coordsBrand, () => coordsData[key]);
   nativeMethod(GeolocationCoordinates.prototype, 'toJSON', { toJSON() {
-    return { accuracy: this.accuracy, latitude: this.latitude, longitude: this.longitude, altitude: this.altitude,
-      altitudeAccuracy: this.altitudeAccuracy, heading: this.heading, speed: this.speed };
+    if (!coordsBrand.has(this)) throw new TypeError('Illegal invocation');
+    return { ...coordsData };
   } }.toJSON);
-  var GeolocationPosition = class GeolocationPosition {};
-  nativeMethod(GeolocationPosition.prototype, 'toJSON', { toJSON() { return { timestamp: this.timestamp, coords: this.coords.toJSON() }; } }.toJSON);
-  var geo = new Geolocation();
+  var GeolocationPosition = class GeolocationPosition {}, nativePosition = new GeolocationPosition();
+  var positionBrand = new WeakSet([nativePosition]);
+  nativeGetter(GeolocationPosition.prototype, 'coords', positionBrand, () => nativeCoords);
+  nativeGetter(GeolocationPosition.prototype, 'timestamp', positionBrand, () => 123);
+  nativeMethod(GeolocationPosition.prototype, 'toJSON', { toJSON() {
+    if (!positionBrand.has(this)) throw new TypeError('Illegal invocation');
+    return { timestamp: 123, coords: { ...coordsData } };
+  } }.toJSON);
   for (const [key, value] of Object.entries({
     language: 'en-US', languages: ['en-US'], deviceMemory: 8,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/152.0.0.0 Safari/537.36',
@@ -300,12 +324,21 @@ test("locked navigator prototype fields are never shadowed on the instance", () 
 });
 
 
-test("returned geolocation toJSON proxies serialize fresh plain objects in Chromium's observable order", async () => {
+test("native geolocation success keeps branded objects and serializes the effective coordinates", async () => {
   const h = page();
   const position = await new Promise(resolve => {
     h.context.receivePosition = resolve;
     h.run("navigator.geolocation.getCurrentPosition(receivePosition)");
   });
+  assert.equal(position, h.run("nativePosition"));
+  assert.equal(position.coords, h.run("nativeCoords"));
+  assert.ok(position instanceof h.run("GeolocationPosition"));
+  assert.ok(position.coords instanceof h.run("GeolocationCoordinates"));
+  assert.deepEqual(Reflect.ownKeys(position), []);
+  assert.deepEqual(Reflect.ownKeys(position.coords), []);
+  assert.equal(position.timestamp, 123);
+  const { profile, seed } = resolveProfile("https://example.com/path", settings, Date.now(), undefined, "native-wrappers");
+  for (const [key, value] of Object.entries(effectiveGeolocation(profile, seed))) assert.equal(position.coords[key], value);
   const json = position.toJSON();
   assert.notEqual(json, position);
   assert.notEqual(json.coords, position.coords);
@@ -325,4 +358,31 @@ test("returned geolocation toJSON proxies serialize fresh plain objects in Chrom
     assert.equal(method.toString(), native.toString());
     assert.notEqual(object.toJSON(), object.toJSON());
   }
+});
+
+test("geolocation forwards native permission errors, options, and watch lifecycle", async () => {
+  const h = page();
+  h.run("geoMode = 'denied'; var options = { maximumAge: 25, timeout: 50 }; var successes = 0");
+  const denied = await new Promise(resolve => {
+    h.context.denied = resolve;
+    h.run("navigator.geolocation.getCurrentPosition(() => ++successes, denied, options)");
+  });
+  assert.equal(denied, h.run("geoError"));
+  assert.equal(h.run("geoCalls[0].error === denied && geoCalls[0].options === options && successes === 0"), true);
+  h.run("geoError = { code: 3 }");
+  const timeout = await new Promise(resolve => {
+    h.context.timedOut = resolve;
+    h.run("navigator.geolocation.getCurrentPosition(() => ++successes, timedOut, options)");
+  });
+  assert.equal(timeout, h.run("geoError"));
+  assert.equal(h.run("successes"), 0);
+  assert.throws(() => h.run("navigator.geolocation.getCurrentPosition(null)"), { name: "TypeError" });
+  assert.throws(() => h.run("Geolocation.prototype.watchPosition.call({}, () => {})"), { name: "TypeError" });
+  const watched = await new Promise(resolve => {
+    h.context.watched = resolve;
+    h.run("geoMode = 'success'; var id = navigator.geolocation.watchPosition(watched, denied, options)");
+  });
+  assert.equal(watched, h.run("nativePosition"));
+  assert.equal(h.run("id === watchId && typeof watchCallback === 'function'"), true);
+  assert.equal(h.run("navigator.geolocation.clearWatch(id); watchCallback"), undefined);
 });

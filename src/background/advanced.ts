@@ -1,3 +1,4 @@
+import { effectiveGeolocation } from "../shared/profiles";
 import type { Profile } from "../shared/types";
 
 const PROTOCOL_VERSION = "1.3";
@@ -29,6 +30,7 @@ export interface AdvancedResult {
 export async function applyAdvancedOverrides(
   tabId: number,
   profile: Profile,
+  seed: string,
   isCurrent: () => boolean = () => true
 ): Promise<AdvancedResult> {
   if (!chrome.debugger) {
@@ -36,21 +38,17 @@ export async function applyAdvancedOverrides(
   }
 
   return enqueueDebuggerOperation(tabId, () => isCurrent()
-    ? applyAdvancedOverridesNow(tabId, profile)
+    ? applyAdvancedOverridesNow(tabId, profile, seed)
     : Promise.resolve({ attempted: false, applied: false }));
 }
 
-async function applyAdvancedOverridesNow(tabId: number, profile: Profile): Promise<AdvancedResult> {
+async function applyAdvancedOverridesNow(tabId: number, profile: Profile, seed: string): Promise<AdvancedResult> {
   const target: Debuggee = { tabId };
   let acquiredSession = false;
   try {
     await attachIfNeeded(target, tabId);
     acquiredSession = true;
-    await sendCommand(target, "Emulation.setGeolocationOverride", {
-      latitude: profile.latitude,
-      longitude: profile.longitude,
-      accuracy: profile.accuracy
-    });
+    await sendCommand(target, "Emulation.setGeolocationOverride", effectiveGeolocation(profile, seed));
     await sendCommand(target, "Emulation.setTimezoneOverride", { timezoneId: profile.timezoneId });
     await sendCommand(target, "Emulation.setLocaleOverride", { locale: profile.intlLocale || profile.locale });
     // UA and Client Hints have one owner: either Ghost's page/header layer or
