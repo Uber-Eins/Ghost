@@ -21,7 +21,7 @@ test("screenForProfile fixes a resolution per profile id independently of site a
   const seeds = new Set();
   for (const site of ["https://one.example", "https://two.example"]) {
     for (const salt of ["session-one", "session-two"]) {
-      const resolved = resolveProfile(site, settings, "lite", 0, site, salt);
+      const resolved = resolveProfile(site, settings, 0, site, salt);
       seeds.add(resolved.seed);
       assert.deepEqual(screenForProfile(resolved.profile, "Win32", smallOuter), expected);
     }

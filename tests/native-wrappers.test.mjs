@@ -5,8 +5,8 @@ import { webcrypto } from "node:crypto";
 import vm from "node:vm";
 import { DEFAULT_SETTINGS, normalizeSettings } from "../dist/test/test-api.js";
 
-const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
-const pageRelated = readFileSync(new URL("../dist/lite/page-related.js", import.meta.url), "utf8");
+const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
+const pageRelated = readFileSync(new URL("../dist/advanced/page-related.js", import.meta.url), "utf8");
 // Deliberately never install Ghost here: this is lies()'s fresh iframe realm.
 const foreignToString = vm.runInNewContext("Function.prototype.toString");
 const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": "tokyo-ja-jp" } });
@@ -124,7 +124,7 @@ function realm() {
 }
 function page() {
   const h = realm();
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite", sessionSalt: "native-wrappers" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, sessionSalt: "native-wrappers" };
   h.run(pageMain);
   return h;
 }
@@ -274,7 +274,7 @@ test("actual Blob worker prelude replacements pass the fresh-realm detector and 
 test("absent native navigator accessors remain named, nonconstructible synthetic getters", () => {
   const h = realm();
   h.run("delete Navigator.prototype.deviceMemory");
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
   h.run(pageMain);
   for (const name of ["deviceMemory"]) {
     const getter = h.run(`Object.getOwnPropertyDescriptor(Navigator.prototype, '${name}').get`);
@@ -288,7 +288,7 @@ test("absent native navigator accessors remain named, nonconstructible synthetic
 test("locked navigator prototype fields are never shadowed on the instance", () => {
   const h = realm();
   h.run("Object.defineProperty(Navigator.prototype, 'language', {configurable: false})");
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
   h.run(pageMain);
   assert.equal(h.run("navigator.language"), "en-US");
   assert.equal(h.run("Object.hasOwn(navigator, 'language')"), false);

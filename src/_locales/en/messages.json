@@ -24,11 +24,8 @@
   "mediaDeviceListSubtitle": { "message": "Sites without camera or microphone permission see one microphone, camera and speaker." },
   "singleScreen": { "message": "Report a single screen" },
   "singleScreenSubtitle": { "message": "Sites see screen.isExtended as false." },
-  "extensionNameLite": {
-    "message": "Ghost Privacy Lite"
-  },
-  "extensionNameAdvanced": {
-    "message": "Ghost Privacy Advanced"
+  "extensionName": {
+    "message": "Ghost Privacy"
   },
   "extensionShortName": {
     "message": "Ghost"
@@ -66,8 +63,7 @@
   "automaticLocationSubtitle": { "message": "Optional remote lookup for VPN users. When enabled, IPPure receives your public IP address; Ghost stores only validated location fields." },
   "automaticLocationUpdated": { "message": "updated" },
   "build": { "message": "Global Configuration" },
-  "buildAdvanced": { "message": "Advanced overrides: CDP environment overrides are available. DevTools conflicts automatically fall back to lite behavior." },
-  "buildLite": { "message": "Lite mode: no debugger permission. JavaScript surfaces and request headers are handled without CDP." },
+  "advancedOverridesDescription": { "message": "Use Chrome DevTools Protocol overrides. When off or unavailable, Ghost uses page and request-header protection only." },
   "buildSubtitle": { "message": "Global protection and advanced override settings." },
   "cancel": { "message": "Cancel" },
   "cannotDeleteLastProfile": { "message": "Keep at least one profile available." },
@@ -181,10 +177,7 @@
   "navGeneral": { "message": "General" },
   "navLocation": { "message": "Location" },
   "navHelium": { "message": "Helium" },
-  "buildLiteLabel": { "message": "Lite" },
-  "buildAdvancedLabel": { "message": "Advanced" },
   "advancedOverrides": { "message": "Advanced CDP overrides" },
-  "advancedUnavailable": { "message": "Not available in the Lite build." },
   "languagesHint": { "message": "Comma-separated, most preferred first." },
   "sectionIdentity": { "message": "Identity" },
   "sectionLanguage": { "message": "Language" },

@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
 
-const background = readFileSync(new URL("../dist/test/background-advanced.js", import.meta.url), "utf8");
+const background = readFileSync(new URL("../dist/advanced/background.js", import.meta.url), "utf8");
 
 function deferred() {
   let resolve;
@@ -142,7 +142,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     navigator: { userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" },
     console: { error(...args) { errors.push(args.map(String).join(" ")); } }
   });
-  vm.runInContext(background, context, { filename: "background-advanced.js" });
+  vm.runInContext(background, context, { filename: "background.js" });
   return {
     local, session, calls, errors, attached, blocked: blocked.promise, notified: notified.promise,
     initialized: initialized.promise, detached: detached.promise,
@@ -288,7 +288,7 @@ test("session noise salt is created once and reused across worker restarts and s
     { frameId: 0, url: "https://example.com/", tab: { id: 7, url: "https://example.com/" } }
   ));
   assert.equal(response.ok, true);
-  const synchronous = resolveProfile("https://example.com/", first.bootstrap.settings, "advanced", Date.now(), "https://example.com/", salt);
+  const synchronous = resolveProfile("https://example.com/", first.bootstrap.settings, Date.now(), "https://example.com/", salt);
   assert.equal(response.value.seed, synchronous.seed);
   assert.equal(JSON.stringify(response).includes(salt), false);
   await promptly(first.request({ type: "setGlobalEnabled", enabled: false }));

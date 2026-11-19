@@ -11,10 +11,9 @@ import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfi
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import { installTimePatches } from "../shared/time-patch";
 import { normalizeSettings, resolveProfile } from "../shared/storage";
-import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
+import type { GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
-declare const __GHOST_BUILD__: BuildTarget;
 declare const __GHOST_RELATED_ONLY__: boolean;
 
 interface GhostState {
@@ -31,7 +30,6 @@ interface GhostState {
 
 interface BootstrapPayload {
   sessionSalt?: string;
-  build?: BuildTarget;
   settings?: GhostSettings;
 }
 
@@ -454,8 +452,7 @@ function resolveBootstrapPayload(
   if (!payload?.settings || !pageUrl) {
     return null;
   }
-  const build = payload.build === "advanced" ? "advanced" : __GHOST_BUILD__;
-  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build, Date.now(), topLevelUrl,
+  return resolveProfile(pageUrl, normalizeSettings(payload.settings), Date.now(), topLevelUrl,
     typeof payload.sessionSalt === "string" ? payload.sessionSalt : undefined);
 }
 

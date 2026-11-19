@@ -24,11 +24,8 @@
   "mediaDeviceListSubtitle": { "message": "未获得摄像头或麦克风权限的网站会看到一个麦克风、一个摄像头和一个扬声器。" },
   "singleScreen": { "message": "报告单个屏幕" },
   "singleScreenSubtitle": { "message": "网站看到的 screen.isExtended 为 false。" },
-  "extensionNameLite": {
-    "message": "Ghost 隐私 Lite"
-  },
-  "extensionNameAdvanced": {
-    "message": "Ghost 隐私 Advanced"
+  "extensionName": {
+    "message": "Ghost 隐私"
   },
   "extensionShortName": {
     "message": "Ghost"
@@ -66,8 +63,7 @@
   "automaticLocationSubtitle": { "message": "面向 VPN 用户的可选远程查询。启用后 IPPure 会收到你的公网 IP；Ghost 仅保存经过校验的位置字段。" },
   "automaticLocationUpdated": { "message": "更新于" },
   "build": { "message": "全局配置" },
-  "buildAdvanced": { "message": "高级覆盖：可使用 CDP 环境覆盖。DevTools 冲突时会自动回退到 lite 行为。" },
-  "buildLite": { "message": "Lite 模式：无 debugger 权限。通过 JavaScript 表面与请求头规则处理。" },
+  "advancedOverridesDescription": { "message": "使用 Chrome 开发者工具协议覆盖。关闭或无法连接时，Ghost 仅保护页面和请求头。" },
   "buildSubtitle": { "message": "全局保护与高级覆盖设置。" },
   "cancel": { "message": "取消" },
   "cannotDeleteLastProfile": { "message": "至少需要保留一个可用画像。" },
@@ -181,10 +177,7 @@
   "navGeneral": { "message": "常规" },
   "navLocation": { "message": "位置" },
   "navHelium": { "message": "Helium" },
-  "buildLiteLabel": { "message": "Lite" },
-  "buildAdvancedLabel": { "message": "Advanced" },
   "advancedOverrides": { "message": "高级 CDP 覆盖" },
-  "advancedUnavailable": { "message": "Lite 版不提供此功能。" },
   "languagesHint": { "message": "以逗号分隔，优先级高的在前。" },
   "sectionIdentity": { "message": "基本信息" },
   "sectionLanguage": { "message": "语言" },

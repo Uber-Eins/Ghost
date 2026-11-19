@@ -9,7 +9,6 @@ type StatusTone = "ok" | "warn" | "danger" | "muted";
 
 const elements = {
   popup: byId("popup", "main.popup"),
-  build: byId("build"),
   statusText: byId("statusText"),
   protectionWarning: byId("protectionWarning"),
   enableUserScripts: byId<HTMLButtonElement>("enableUserScripts"),
@@ -101,7 +100,7 @@ async function loadAndRepairPopupState(): Promise<PopupState> {
     return state;
   }
   try {
-    const repaired = await repairContentBootstrap(state.settings, state.build);
+    const repaired = await repairContentBootstrap(state.settings);
     return repaired ? { ...state, earlyBootstrapAvailable: true } : state;
   } catch {
     // The warning remains visible until synchronous registration succeeds.
@@ -162,7 +161,6 @@ function render(): void {
   elements.popup.dataset.supported = String(state.supportedPage);
   elements.statusText.textContent = status.text;
 
-  elements.build.textContent = state.build === "advanced" ? t("buildAdvancedLabel") : t("buildLiteLabel");
   elements.protectionWarning.hidden = state.earlyBootstrapAvailable;
   elements.pausedBanner.hidden = pausedUntil === null;
   if (pausedUntil !== null) {

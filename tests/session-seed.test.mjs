@@ -8,7 +8,7 @@ import { DEFAULT_SETTINGS, normalizeSettings, repairContentBootstrap, resolvePro
 const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": "tokyo-ja-jp" } });
 const url = "https://example.com/path";
 const resolve = (salt, pageUrl = url, partitionUrl = pageUrl) =>
-  resolveProfile(pageUrl, settings, "lite", 0, partitionUrl, salt);
+  resolveProfile(pageUrl, settings, 0, partitionUrl, salt);
 
 test("session seed is stable for the same salt, top-level site and profile", () => {
   assert.equal(resolve("session-one").seed, resolve("session-one").seed);
@@ -22,7 +22,7 @@ test("session seed rotates with the salt", () => {
 test("session seed is partitioned by site and profile", () => {
   assert.notEqual(resolve("session-one").seed, resolve("session-one", "https://other.test/").seed);
   const otherProfile = normalizeSettings({ ...settings, siteProfiles: { "*": "new-york-en-us" } });
-  assert.notEqual(resolve("session-one").seed, resolveProfile(url, otherProfile, "lite", 0, url, "session-one").seed);
+  assert.notEqual(resolve("session-one").seed, resolveProfile(url, otherProfile, 0, url, "session-one").seed);
 });
 
 test("salt never changes persistent profile selection or settings", () => {
@@ -52,10 +52,10 @@ test("fresh popup repair reads the current session salt without writing storage"
     }
   };
   try {
-    assert.equal(await repairContentBootstrap(settings, "lite"), true);
+    assert.equal(await repairContentBootstrap(settings), true);
     assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
     salt = "next-session";
-    assert.equal(await repairContentBootstrap(settings, "lite"), true);
+    assert.equal(await repairContentBootstrap(settings), true);
     assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
   } finally {
     globalThis.chrome = previousChrome;
@@ -63,7 +63,7 @@ test("fresh popup repair reads the current session salt without writing storage"
 });
 
 
-const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
+const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
 
 function pageHarness(bootstrap) {
   const context = vm.createContext({ crypto: webcrypto, URL, queueMicrotask, __GHOST_BOOTSTRAP_SETTINGS__: bootstrap });
@@ -111,7 +111,7 @@ function pageHarness(bootstrap) {
 }
 
 test("bootstrap documents keep their original noise through restart-race replies and history refreshes", () => {
-  const page = pageHarness({ settings, build: "lite", sessionSalt: "previous-session" });
+  const page = pageHarness({ settings, sessionSalt: "previous-session" });
   const initialWidth = page.width();
   assert.equal(page.bootstrapDeleted, true);
   page.profile(resolve("new-session"));
@@ -125,7 +125,7 @@ test("bootstrap documents keep their original noise through restart-race replies
 });
 
 test("older bootstrap payloads without salt keep deterministic noise without reloading", () => {
-  const page = pageHarness({ settings, build: "lite" });
+  const page = pageHarness({ settings });
   const initialWidth = page.width();
   page.refresh();
   page.profile(resolve("new-session"));
@@ -136,7 +136,7 @@ test("older bootstrap payloads without salt keep deterministic noise without rel
 test("fallback documents without bootstrap keep adopting asynchronous session seeds", () => {
   const page = pageHarness(undefined);
   page.profile(resolve("new-session"));
-  const saltedPage = pageHarness({ settings, build: "lite", sessionSalt: "new-session" });
+  const saltedPage = pageHarness({ settings, sessionSalt: "new-session" });
   assert.equal(page.width(), saltedPage.width());
   assert.equal(page.reloads, 0);
 });

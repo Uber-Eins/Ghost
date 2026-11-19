@@ -22,9 +22,8 @@ import {
   resolveProfile,
   updateSettings
 } from "../shared/storage";
-import type { BuildTarget, GhostSettings, PopupState, RuntimeRequest, RuntimeResponse } from "../shared/types";
+import type { GhostSettings, PopupState, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
-declare const __GHOST_BUILD__: BuildTarget;
 declare const __GHOST_CHANNEL__: string;
 
 const ENABLED_ICON_PATHS = iconSet("enabled");
@@ -205,7 +204,6 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
     const settings = await readAppliedSettings();
     const profile = findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
-      build: __GHOST_BUILD__,
       enabled: false,
       uaSpoofingEnabled: false,
       canvasMeasureTextSpoofingEnabled: false,
@@ -217,7 +215,6 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
       seed: stableSeed("", profile.id),
       profile,
       advanced: {
-        available: __GHOST_BUILD__ === "advanced",
         attempted: false,
         applied: false
       }
@@ -263,7 +260,7 @@ function trustedTopLevelUrl(sender: chrome.runtime.MessageSender, fallbackUrl: s
 }
 
 function resolveFrameProfile(pageUrl: string, topLevelUrl: string, settings: GhostSettings, sessionSalt: string) {
-  return resolveProfile(pageUrl, settings, __GHOST_BUILD__, Date.now(), topLevelUrl, sessionSalt);
+  return resolveProfile(pageUrl, settings, Date.now(), topLevelUrl, sessionSalt);
 }
 
 function shouldApplyTabWideOverrides(sender: chrome.runtime.MessageSender): sender is chrome.runtime.MessageSender & { tab: chrome.tabs.Tab & { id: number } } {
@@ -288,7 +285,7 @@ async function refreshAdvancedOverrideForTab(
 ): Promise<AdvancedResult | null> {
   const revision = settingsRevision;
   const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
-  if (__GHOST_BUILD__ !== "advanced" || !isCurrent()) {
+  if (!isCurrent()) {
     return null;
   }
   let result: AdvancedResult;
@@ -308,9 +305,7 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
     return;
   }
   await clearTabHeaderRule(tabId, isCurrent);
-  if (__GHOST_BUILD__ === "advanced") {
-    await clearAdvancedOverrides(tabId, isCurrent);
-  }
+  await clearAdvancedOverrides(tabId, isCurrent);
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
@@ -323,7 +318,7 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
-  const resolved = resolveProfile(url, settings, __GHOST_BUILD__);
+  const resolved = resolveProfile(url, settings);
   await refreshTabHeaderRule(tabId, resolved, settings, () => (
     revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
   ));
@@ -346,10 +341,9 @@ async function getPopupState(url: string): Promise<PopupState> {
   const fileAccessRequired = protocolSupported && url.startsWith("file:") && !await pageSchemeAccessAllowed(url);
   if (!protocolSupported || fileAccessRequired) {
     const profile = protocolSupported
-      ? resolveProfile(url, settings, __GHOST_BUILD__).profile
+      ? resolveProfile(url, settings).profile
       : findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
-      build: __GHOST_BUILD__,
       settings,
       url,
       siteKey: fileAccessRequired ? siteKeyFromUrl(url) : unsupportedPageLabel(url),
@@ -358,15 +352,13 @@ async function getPopupState(url: string): Promise<PopupState> {
       earlyBootstrapAvailable,
       enabledForSite: false,
       profile,
-      profiles: profilesFromSettings(settings),
-      advancedAvailable: __GHOST_BUILD__ === "advanced"
+      profiles: profilesFromSettings(settings)
     };
   }
 
   const siteKey = siteKeyFromUrl(url);
-  const resolved = resolveProfile(url, settings, __GHOST_BUILD__);
+  const resolved = resolveProfile(url, settings);
   return {
-    build: __GHOST_BUILD__,
     settings,
     url,
     siteKey,
@@ -375,8 +367,7 @@ async function getPopupState(url: string): Promise<PopupState> {
     earlyBootstrapAvailable,
     enabledForSite: !isExcludedUrl(url, settings.excludedDomains),
     profile: resolved.profile,
-    profiles: profilesFromSettings(settings),
-    advancedAvailable: __GHOST_BUILD__ === "advanced"
+    profiles: profilesFromSettings(settings)
   };
 }
 
@@ -472,7 +463,7 @@ async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refr
   const steps: Array<() => Promise<void>> = [
     () => scheduleTemporaryDisableAlarm(settings),
     () => scheduleAutomaticLocationAlarm(settings),
-    async () => refreshContentBootstrap(settings, __GHOST_BUILD__, await getSessionSalt()),
+    async () => refreshContentBootstrap(settings, await getSessionSalt()),
     () => refreshHeaderRules(settings),
     () => updateActionIcon(settings)
   ];
@@ -618,7 +609,7 @@ async function refreshKnownTabOverrides(settings: GhostSettings, refreshRevision
     const isCurrent = () => (
       refreshRevision === settingsRefreshRevision && tabRevision === currentTabOverrideRevision(tabId)
     );
-    const resolved = resolveProfile(tab.url, settings, __GHOST_BUILD__);
+    const resolved = resolveProfile(tab.url, settings);
     if (!isCurrent()) {
       return;
     }

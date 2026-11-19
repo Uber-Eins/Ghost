@@ -1,7 +1,5 @@
 import type { HeliumFlagDetection } from "./helium-detect";
 
-export type BuildTarget = "lite" | "advanced";
-
 export type UaMode = "desktop-chromium" | "native";
 export type AutomaticLanguageMode = "auto" | "profile";
 
@@ -68,7 +66,6 @@ export interface GhostSettings {
 }
 
 export interface ResolvedProfile {
-  build: BuildTarget;
   enabled: boolean;
   mediaDeviceListEnabled: boolean;
   singleScreenEnabled: boolean;
@@ -80,7 +77,6 @@ export interface ResolvedProfile {
   seed: string;
   profile: Profile;
   advanced: {
-    available: boolean;
     attempted: boolean;
     applied: boolean;
     error?: string;
@@ -88,7 +84,6 @@ export interface ResolvedProfile {
 }
 
 export interface PopupState {
-  build: BuildTarget;
   settings: GhostSettings;
   url: string;
   siteKey: string;
@@ -98,7 +93,6 @@ export interface PopupState {
   enabledForSite: boolean;
   profile: Profile;
   profiles: Profile[];
-  advancedAvailable: boolean;
 }
 
 export type RuntimeRequest =

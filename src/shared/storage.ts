@@ -8,7 +8,7 @@ import {
   normalizeSiteRuleKey,
   siteKeyFromUrl
 } from "./site";
-import type { GhostSettings, Profile, ResolvedProfile, BuildTarget } from "./types";
+import type { GhostSettings, Profile, ResolvedProfile } from "./types";
 import { stableSeed } from "./hash";
 import { normalizeTimezoneId } from "./locations";
 import { applyAutomaticLocation, normalizeAutomaticLocation } from "./automatic-location";
@@ -157,7 +157,6 @@ export function ensureSiteAssignment(settings: GhostSettings, siteKey: string): 
 export function resolveProfile(
   url: string,
   settings: GhostSettings,
-  build: BuildTarget,
   now = Date.now(),
   partitionUrl = url,
   sessionSalt?: string
@@ -179,7 +178,6 @@ export function resolveProfile(
   const webglInfoSpoofingEnabled = enabled && !settings.disableWebglInfoSpoofing;
 
   return {
-    build,
     enabled,
     mediaDeviceListEnabled: enabled && settings.mediaDeviceListEnabled,
     singleScreenEnabled: enabled && settings.singleScreenEnabled,
@@ -192,7 +190,6 @@ export function resolveProfile(
     seed: stableSeed(siteKey, profile.id, sessionSalt ? `session:${sessionSalt}` : undefined),
     profile,
     advanced: {
-      available: build === "advanced",
       attempted: false,
       applied: false
     }

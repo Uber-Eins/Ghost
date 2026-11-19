@@ -91,7 +91,6 @@ function OptionsApp(): React.ReactElement {
   const toastTimer = React.useRef<number | null>(null);
   const navLock = React.useRef<number | null>(null);
 
-  const isAdvancedBuild = React.useMemo(() => chrome.runtime.getManifest().permissions?.includes("debugger") ?? false, []);
   const version = React.useMemo(() => chrome.runtime.getManifest().version, []);
   const profiles = React.useMemo(
     () => settings ? allProfiles(settings.customProfiles, settings.hiddenPresetProfileIds) : [],
@@ -257,7 +256,7 @@ function OptionsApp(): React.ReactElement {
         setSettings(nextSettings);
         setSavedSettings(nextSettings);
         setAutomaticLocationSavedEnabled(nextSettings.automaticLocationEnabled);
-        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings, isAdvancedBuild));
+        setSynchronousProtectionAvailable(await repairContentBootstrapBestEffort(nextSettings));
         const result = await runDetection();
         if (result && nextSettings.heliumFlagSync && !sameHeliumSurfaces(nextSettings, applyHeliumFlagDetection(nextSettings, result))) {
           await syncDetectedFlags(result);
@@ -268,7 +267,7 @@ function OptionsApp(): React.ReactElement {
         setSynchronousProtectionAvailable(false);
         setLoadError(errorText(error));
       });
-  }, [flashToast, isAdvancedBuild, runDetection, syncDetectedFlags]);
+  }, [flashToast, runDetection, syncDetectedFlags]);
 
   const navigate = React.useCallback((id: string) => {
     setActiveSection(id as SectionId);
@@ -482,7 +481,6 @@ function OptionsApp(): React.ReactElement {
 
   const siteRules = sortedSiteProfiles(settings.siteProfiles);
   const profileUsage = countProfileUsage(settings.siteProfiles);
-  const buildLabel = isAdvancedBuild ? t("buildAdvancedLabel") : t("buildLiteLabel");
   const detectedLocation = settings.automaticLocationEnabled ? settings.automaticLocation : null;
 
   return (
@@ -491,7 +489,6 @@ function OptionsApp(): React.ReactElement {
         <Sidebar
           items={navItems}
           activeId={activeSection}
-          isAdvancedBuild={isAdvancedBuild}
           version={version}
           protectionAvailable={synchronousProtectionAvailable}
           onNavigate={navigate}
@@ -501,7 +498,7 @@ function OptionsApp(): React.ReactElement {
           <header className="mb-10 flex flex-col gap-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
               <div className="min-w-0">
-                <div className="eyebrow mb-2">Ghost · {buildLabel}</div>
+                <div className="eyebrow mb-2">Ghost</div>
                 <h1>{t("ghostOptions")}</h1>
                 <p className="mt-2 max-w-xl text-[15px] text-muted-foreground">{t("optionsSubtitle")}</p>
               </div>
@@ -558,18 +555,11 @@ function OptionsApp(): React.ReactElement {
                 </SettingRow>
                 <SettingRow
                   icon={Terminal}
-                  disabled={!isAdvancedBuild}
-                  title={(
-                    <span className="inline-flex flex-wrap items-center gap-2">
-                      {t("advancedOverrides")}
-                      <Badge variant={isAdvancedBuild ? "success" : "outline"}>{buildLabel}</Badge>
-                    </span>
-                  )}
-                  description={isAdvancedBuild ? t("buildAdvanced") : `${t("advancedUnavailable")} ${t("buildLite")}`}
+                  title={t("advancedOverrides")}
+                  description={t("advancedOverridesDescription")}
                 >
                   <Switch
                     checked={settings.advancedEnabled}
-                    disabled={!isAdvancedBuild}
                     onCheckedChange={(checked) => updateSettings((current) => ({ ...current, advancedEnabled: checked }))}
                     aria-label={t("advancedToggle")}
                   />
@@ -1116,9 +1106,9 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function repairContentBootstrapBestEffort(settings: GhostSettings, advanced: boolean): Promise<boolean> {
+async function repairContentBootstrapBestEffort(settings: GhostSettings): Promise<boolean> {
   try {
-    return await repairContentBootstrap(settings, advanced ? "advanced" : "lite");
+    return await repairContentBootstrap(settings);
   } catch {
     return false;
   }

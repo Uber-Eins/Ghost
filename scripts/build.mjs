@@ -7,8 +7,10 @@ import path from "node:path";
 
 const root = process.cwd();
 const args = process.argv.slice(2);
+if (args.some((arg) => arg !== "--test")) {
+  throw new Error(`Unknown build argument: ${args.join(" ")}`);
+}
 const includeTestApis = args.includes("--test");
-const targets = parseTargets(args.filter((arg) => arg !== "--test"));
 const channel = "ghost-profile-v1";
 const testOutdir = path.join(root, "dist", "test");
 
@@ -30,30 +32,14 @@ const workerTimePatch = (await esbuildBuild({
   logLevel: "warning"
 })).outputFiles[0].text.trim();
 
-for (const target of targets) {
-  await buildTarget(target);
-}
+await buildExtension();
 
-function parseTargets(args) {
-  const requested = args.filter(Boolean);
-  if (requested.length === 0) {
-    return ["lite", "advanced"];
-  }
-  for (const target of requested) {
-    if (!["lite", "advanced"].includes(target)) {
-      throw new Error(`Unknown build target: ${target}`);
-    }
-  }
-  return requested;
-}
-
-async function buildTarget(target) {
-  const outdir = path.join(root, "dist", target);
+async function buildExtension() {
+  const outdir = path.join(root, "dist", "advanced");
   await rm(outdir, { recursive: true, force: true });
   await mkdir(outdir, { recursive: true });
 
   const define = {
-    __GHOST_BUILD__: JSON.stringify(target),
     __GHOST_CHANNEL__: JSON.stringify(channel),
     __GHOST_WORKER_TIME_PATCH__: JSON.stringify(workerTimePatch)
   };
@@ -88,10 +74,7 @@ async function buildTarget(target) {
     scriptBundles.push(
       bundleEsm("src/test-api.ts", "test-api.js", testOutdir, define),
       bundleEsm("src/dnr-test-api.ts", "dnr-test-api.js", testOutdir, define),
-      bundleEsm("src/advanced-test-api.ts", "advanced-test-api.js", testOutdir, define),
-      bundleIife("src/background/index.ts", "background-advanced.js", testOutdir, {
-        ...define, __GHOST_BUILD__: JSON.stringify("advanced")
-      })
+      bundleEsm("src/advanced-test-api.ts", "advanced-test-api.js", testOutdir, define)
     );
   }
   await Promise.all(scriptBundles);
@@ -105,8 +88,8 @@ async function buildTarget(target) {
     cp(path.join(root, "src/_locales"), path.join(outdir, "_locales"), { recursive: true })
   ]);
 
-  await writeFile(path.join(outdir, "manifest.json"), JSON.stringify(manifest(target), null, 2));
-  await writeFile(path.join(outdir, "README.txt"), await buildReadme(target));
+  await writeFile(path.join(outdir, "manifest.json"), JSON.stringify(manifest(), null, 2));
+  await writeFile(path.join(outdir, "README.txt"), await readFile(path.join(root, "README.md"), "utf8"));
 }
 
 function bundleIife(entry, outfile, outdir, define) {
@@ -166,22 +149,20 @@ function bundleOptionsPage(outdir, define) {
   });
 }
 
-function manifest(target) {
+function manifest() {
   const permissions = [
     "alarms",
+    "debugger",
     "declarativeNetRequestWithHostAccess",
     "scripting",
     "storage",
     "tabs",
     "userScripts"
   ];
-  if (target === "advanced") {
-    permissions.push("debugger");
-  }
 
   return {
     manifest_version: 3,
-    name: target === "advanced" ? "__MSG_extensionNameAdvanced__" : "__MSG_extensionNameLite__",
+    name: "__MSG_extensionName__",
     short_name: "__MSG_extensionShortName__",
     version: "0.1.0",
     description: "__MSG_extensionDescription__",
@@ -221,9 +202,4 @@ function iconSet(state) {
     48: `icons/${state}-48.png`,
     128: `icons/${state}-128.png`
   };
-}
-
-async function buildReadme(target) {
-  const readme = await readFile(path.join(root, "README.md"), "utf8");
-  return `Ghost ${target} build\n\n${readme}`;
 }
