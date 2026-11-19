@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ghost options preview</title>
+</head>
+<body>
+  <div id="root">Build with npm run build:test, then serve the repository on loopback.</div>
+  <script type="module">
+    import { DEFAULT_SETTINGS, PRESET_PROFILES } from "../dist/test/test-api.js";
+
+    const query = new URLSearchParams(location.search);
+    const language = query.get("lang") === "zh_CN" ? "zh_CN" : "en";
+    const base = new URL("../dist/lite/", location.href);
+    const messages = await fetch(new URL(`_locales/${language}/messages.json`, base)).then((response) => response.json());
+    const profile = {
+      ...structuredClone(PRESET_PROFILES[0]), id: "preview-windows", label: "Preview / Windows",
+      screenResolution: { width: 2560, height: 1440 }, keyboardLayout: "uk", voices: ["en-GB", "ja-JP"]
+    };
+    let settings = { ...structuredClone(DEFAULT_SETTINGS), customProfiles: [profile] };
+    const listeners = new Set();
+    const storage = {
+      get: async () => ({ "ghost.settings": settings, "ghost.sessionNoiseSalt": "preview-only" }),
+      set: async (values) => {
+        if (!values["ghost.settings"]) return;
+        const oldValue = settings;
+        settings = values["ghost.settings"];
+        for (const listener of listeners) listener({ "ghost.settings": { oldValue, newValue: settings } }, "local");
+      }
+    };
+    window.chrome = {
+      runtime: {
+        getManifest: () => ({ version: "0.1.0", permissions: [] }),
+        getPlatformInfo: (callback) => callback({ os: "win", arch: "x86-64", nacl_arch: "x86-64" }),
+        sendMessage: (request, callback) => {
+          if (request.type === "options.saveState") settings = structuredClone(request.settings);
+          if (request.type === "options.resetState") settings = structuredClone(DEFAULT_SETTINGS);
+          callback({ ok: true, value: settings });
+        }
+      },
+      storage: { local: storage, session: storage, onChanged: { addListener: (listener) => listeners.add(listener), removeListener: (listener) => listeners.delete(listener) } },
+      i18n: { getUILanguage: () => language.replace("_", "-"), getMessage: (key) => messages[key]?.message ?? "" },
+      userScripts: { getScripts: async () => [{ id: "ghost-page-main" }], update: async () => {}, register: async () => {}, unregister: async () => {} },
+      tabs: { create: async () => {} }
+    };
+
+    if (query.get("edit") === "1") {
+      const observer = new MutationObserver(() => {
+        const card = [...document.querySelectorAll("article")].find((element) => element.textContent.includes(profile.id));
+        const edit = card?.querySelector("button");
+        if (!edit) return;
+        observer.disconnect();
+        edit.click();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+    const html = new DOMParser().parseFromString(await fetch(new URL("options.html", base)).then((response) => response.text()), "text/html");
+    for (const source of html.querySelectorAll('link[rel="stylesheet"], script[src]')) {
+      const element = document.createElement(source.tagName.toLowerCase());
+      for (const attribute of source.attributes) element.setAttribute(attribute.name, attribute.value);
+      if (source.tagName === "SCRIPT") element.src = new URL(source.getAttribute("src"), base);
+      else element.href = new URL(source.getAttribute("href"), base);
+      document.head.append(element);
+    }
+  </script>
+</body>
+</html>

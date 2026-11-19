@@ -550,6 +550,12 @@ function OptionsApp(): React.ReactElement {
                     aria-label={t("globalProtection")}
                   />
                 </SettingRow>
+                <SettingRow icon={AudioLines} title={t("mediaDeviceList")} description={t("mediaDeviceListSubtitle")}>
+                  <Switch checked={settings.mediaDeviceListEnabled} onCheckedChange={(checked) => updateSettings((current) => ({ ...current, mediaDeviceListEnabled: checked }))} aria-label={t("mediaDeviceList")} />
+                </SettingRow>
+                <SettingRow icon={Monitor} title={t("singleScreen")} description={t("singleScreenSubtitle")}>
+                  <Switch checked={settings.singleScreenEnabled} onCheckedChange={(checked) => updateSettings((current) => ({ ...current, singleScreenEnabled: checked }))} aria-label={t("singleScreen")} />
+                </SettingRow>
                 <SettingRow
                   icon={Terminal}
                   disabled={!isAdvancedBuild}

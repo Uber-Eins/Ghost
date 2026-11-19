@@ -16,6 +16,10 @@ export interface AutomaticLocation {
   updatedAt: number;
 }
 
+export type ScreenResolution = "auto" | { width: number; height: number };
+export type KeyboardLayoutSetting = "auto" | "us" | "uk" | "de" | "fr" | "jp";
+export type VoiceSetting = "auto" | "none" | string[];
+
 export interface Profile {
   id: string;
   label: string;
@@ -34,6 +38,9 @@ export interface Profile {
   userAgent: string;
   uaMode: UaMode;
   deviceMemory: number;
+  screenResolution?: ScreenResolution;
+  keyboardLayout?: KeyboardLayoutSetting;
+  voices?: VoiceSetting;
   canvasSeedPolicy: "site";
   webglVendor: string;
   webglRenderer: string;
@@ -41,6 +48,8 @@ export interface Profile {
 
 export interface GhostSettings {
   enabled: boolean;
+  mediaDeviceListEnabled: boolean;
+  singleScreenEnabled: boolean;
   advancedEnabled: boolean;
   disableUserAgentSpoofing: boolean;
   disableCanvasMeasureTextSpoofing: boolean;
@@ -61,6 +70,8 @@ export interface GhostSettings {
 export interface ResolvedProfile {
   build: BuildTarget;
   enabled: boolean;
+  mediaDeviceListEnabled: boolean;
+  singleScreenEnabled: boolean;
   uaSpoofingEnabled: boolean;
   canvasMeasureTextSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;

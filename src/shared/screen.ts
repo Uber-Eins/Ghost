@@ -1,6 +1,6 @@
 import { stableIndex } from "./hash";
 import { normalizedPlatformVersionOverride, userAgentMetadataForProfile } from "./profiles";
-import type { Profile } from "./types";
+import type { Profile, ScreenResolution } from "./types";
 
 export interface ProfileScreen {
   width: number;
@@ -11,27 +11,51 @@ export interface ProfileScreen {
   availTop: number;
 }
 
-// Desktop CSS-pixel resolutions represented in StatCounter's public share data:
-// https://gs.statcounter.com/screen-resolution-stats/desktop/worldwide
-// This is a short plausibility list, not a claim about current market weights.
-const RESOLUTIONS = [
-  [1280, 720], [1366, 768], [1440, 900], [1536, 864], [1600, 900],
-  [1920, 1080], [2560, 1440], [2560, 1600], [3840, 2160]
+// Physical panel sizes; CSS dimensions depend on the document's install-time DPR.
+export const SCREEN_RESOLUTIONS = [
+  [1366, 768], [1600, 900], [1920, 1080], [1920, 1200],
+  [2560, 1440], [2560, 1600], [2880, 1800], [3840, 2160]
 ] as const;
 
-export function screenForProfile(profile: Profile, reportedPlatform: string, outer: { width: number; height: number }): ProfileScreen | null {
+export function normalizeScreenResolution(value: unknown): ScreenResolution {
+  if (typeof value !== "object" || value === null) return "auto";
+  const { width, height } = value as { width?: unknown; height?: unknown };
+  return typeof width === "number" && Number.isInteger(width) && width >= 640 && width <= 7680
+    && typeof height === "number" && Number.isInteger(height) && height >= 480 && height <= 4320
+    ? { width, height } : "auto";
+}
+
+function screenCandidates(dpr: number): (readonly [number, number])[] {
+  const candidates = SCREEN_RESOLUTIONS.filter(([width, height]) => Math.round(width / dpr) >= 1280 && Math.round(height / dpr) >= 720);
+  // Extreme scaling can exclude every panel; keep a real panel until the window needs a bump.
+  return candidates.length ? candidates : [SCREEN_RESOLUTIONS[SCREEN_RESOLUTIONS.length - 1]];
+}
+
+export function automaticScreenPanel(profile: Pick<Profile, "id">, dpr = 1): readonly [number, number] {
+  const candidates = screenCandidates(validDpr(dpr));
+  return candidates[stableIndex(profile.id, candidates.length)];
+}
+
+function validDpr(dpr: number): number {
+  return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+}
+
+export function screenForProfile(profile: Profile, reportedPlatform: string, outer: { width: number; height: number }, devicePixelRatio = 1): ProfileScreen | null {
   if (profile.uaMode === "native" || !/^Win/i.test(reportedPlatform)) return null;
+  const dpr = validDpr(devicePixelRatio);
   const platformVersion = normalizedPlatformVersionOverride(profile.platformVersion)
     ?? userAgentMetadataForProfile(profile)?.platformVersion ?? "10.0.0";
   // Unconfirmed default taskbar heights at 100% scaling: Windows 11 uses 48
   // CSS px, Windows 10 uses 40. Custom taskbar sizes/auto-hide are not modelled.
   const taskbar = Number(platformVersion.split(".")[0]) >= 13 ? 48 : 40;
-  let [width, height]: readonly [number, number] = RESOLUTIONS[stableIndex(profile.id, RESOLUTIONS.length)];
+  const fixed = normalizeScreenResolution(profile.screenResolution);
+  const panel = fixed === "auto" ? automaticScreenPanel(profile, dpr) : [fixed.width, fixed.height];
+  let [width, height] = panel.map((size) => Math.round(size / dpr));
   const fits = (size: readonly [number, number]): boolean => size[0] >= outer.width && size[1] - taskbar >= outer.height;
-  if (!fits([width, height])) {
+  if (fixed === "auto" && !fits([width, height])) {
     // Entries are ordered by area; a resize past this choice changes the
     // reported screen only on the next document load (or a profile change).
-    const fitting = RESOLUTIONS.find(fits);
+    const fitting = screenCandidates(dpr).map(([w, h]) => [Math.round(w / dpr), Math.round(h / dpr)] as const).find(fits);
     [width, height] = fitting ?? [Math.ceil(outer.width / 80) * 80, Math.ceil((outer.height + taskbar) / 80) * 80];
   }
   return { width, height, availWidth: width, availHeight: height - taskbar, availLeft: 0, availTop: 0 };

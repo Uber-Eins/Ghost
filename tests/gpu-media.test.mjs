@@ -52,12 +52,12 @@ const patchCode = sourceFunctions("../src/content/main.ts", [
 ]);
 const workerCode = sourceFunctions("../src/shared/worker-prelude.ts", ["workerIdentityPrelude", "workerNavigatorPrelude", "workerWebGLPrelude"]);
 
-function harness() {
-  const context = vm.createContext({ profile: structuredClone(PRESET_PROFILES[0]), webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl });
+function harness(mediaDeviceListEnabled = true) {
+  const context = vm.createContext({ profile: structuredClone(PRESET_PROFILES[0]), webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, mediaDeviceListEnabled });
   const run = (text) => vm.runInContext(text, context);
   run(`
     var window = globalThis, self = globalThis;
-    var state = { enabled: true, webglInfoSpoofingEnabled: false, profile };
+    var state = { enabled: true, webglInfoSpoofingEnabled: false, mediaDeviceListEnabled, profile };
     var parentIdentity = null;
     var nativeFunctionSources = new WeakMap();
     var patchedMediaRealms = new WeakSet(), patchedWebglRealms = new WeakSet(), patchedWebgpuRealms = new WeakSet();
@@ -299,5 +299,27 @@ test("page workerIdentityPrelude passes the derived page GPU info and related-pa
     assert.equal(h.run("captured.webglInfoSpoofingEnabled"), mirrored);
     if (mirrored) assert.equal(h.run("captured.profile.webglRenderer"), "Radeon R9 200 Series, or similar");
     assert.equal(h.run("creates"), 1);
+  }
+});
+
+
+test("patchMediaDevices keeps all media prototypes native when the global list setting is off", async () => {
+  const h = harness(false);
+  h.run("patchMediaDevices(window)");
+  assert.equal(h.run("MediaDevices.prototype.enumerateDevices === originals.enumerate"), true);
+  assert.equal(h.run("MediaDeviceInfo.prototype.toJSON === originals.toJSON"), true);
+  assert.equal(h.run("Object.getOwnPropertyDescriptor(MediaDeviceInfo.prototype, 'kind').get === originals.kind"), true);
+  assert.equal(await h.run("mediaDevices.enumerateDevices()"), h.run("nativeDevices"));
+});
+
+test("patchMediaDevices mirrors parent kinds without returning parent-realm devices", async () => {
+  for (const kinds of [[], ["videoinput"], ["audioinput", "videoinput", "audiooutput"], null]) {
+    const h = harness();
+    h.context.parentKinds = kinds;
+    h.run("nativeDevices = [new InputDeviceInfo('videoinput')]; parentIdentity = { mediaDeviceKinds: async () => parentKinds }; patchMediaDevices(window)");
+    h.context.devices = await h.run("mediaDevices.enumerateDevices()");
+    if (kinds?.length === 1) assert.equal(h.run("devices === nativeDevices"), true);
+    else assert.deepEqual(h.json("devices.map(device => device.kind)"), ["audioinput", "videoinput", "audiooutput"]);
+    assert.equal(h.run("devices instanceof Array && devices.every(device => device instanceof MediaDeviceInfo)"), true);
   }
 });

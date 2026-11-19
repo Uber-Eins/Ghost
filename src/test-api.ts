@@ -1,5 +1,5 @@
-export { screenForProfile, rewriteScreenMediaQuery } from "./shared/screen";
-export { voicesForProfile } from "./shared/voices";
+export { screenForProfile, rewriteScreenMediaQuery, SCREEN_RESOLUTIONS, automaticScreenPanel } from "./shared/screen";
+export { voicesForProfile, WINDOWS_VOICE_LOCALES } from "./shared/voices";
 export { keyboardLayoutForProfile } from "./shared/keyboard";
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
 export { constructDateWithNewTarget } from "./shared/date-constructor";
@@ -31,6 +31,7 @@ export {
 } from "./shared/locations";
 export {
   allProfiles,
+  cloneProfile,
   appVersionForProfile,
   navigatorPlatformForProfile,
   navigatorVendorForProfile,

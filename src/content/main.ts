@@ -22,6 +22,8 @@ interface GhostState {
   uaSpoofingEnabled: boolean;
   canvasMeasureTextSpoofingEnabled: boolean;
   webglInfoSpoofingEnabled: boolean;
+  mediaDeviceListEnabled: boolean;
+  singleScreenEnabled: boolean;
   siteKey: string;
   seed: string;
   profile: Profile;
@@ -43,6 +45,8 @@ interface ParentIdentity {
   profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
   localVoices: () => ProfileVoice[] | null;
   screen: () => ProfileScreen | null;
+  isExtended: () => boolean | null;
+  mediaDeviceKinds: () => Promise<MediaDeviceKind[] | null>;
   webglInfo: () => { vendor: string; renderer: string };
   userAgent: {
     platform: unknown;
@@ -110,6 +114,8 @@ const state: GhostState = {
   uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
   canvasMeasureTextSpoofingEnabled: initialCanvasMeasureTextSpoofingEnabled,
   webglInfoSpoofingEnabled: initialWebglInfoSpoofingEnabled,
+  mediaDeviceListEnabled: bootstrapProfile?.mediaDeviceListEnabled ?? initialEnabled,
+  singleScreenEnabled: bootstrapProfile?.singleScreenEnabled ?? initialEnabled,
   siteKey: initialSiteKey,
   profile: fallbackProfile,
   seed: initialSeed
@@ -118,7 +124,9 @@ const installedSurfaceOwnership = Object.freeze({
   profileProtection: state.enabled,
   userAgent: state.uaSpoofingEnabled,
   canvasMeasureText: state.canvasMeasureTextSpoofingEnabled,
-  webglInfo: state.webglInfoSpoofingEnabled
+  webglInfo: state.webglInfoSpoofingEnabled,
+  mediaDeviceList: state.mediaDeviceListEnabled,
+  singleScreen: state.singleScreenEnabled
 });
 const initialProfileSignature = profileSignature(fallbackProfile);
 // Every replaced built-in is registered against the native it wraps so that
@@ -176,11 +184,15 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
     || installedSurfaceOwnership.userAgent !== resolved.uaSpoofingEnabled
     || installedSurfaceOwnership.canvasMeasureText !== resolved.canvasMeasureTextSpoofingEnabled
     || installedSurfaceOwnership.webglInfo !== resolved.webglInfoSpoofingEnabled
+    || installedSurfaceOwnership.mediaDeviceList !== resolved.mediaDeviceListEnabled
+    || installedSurfaceOwnership.singleScreen !== resolved.singleScreenEnabled
   );
   state.enabled = resolved.enabled;
   state.uaSpoofingEnabled = resolved.uaSpoofingEnabled;
   state.canvasMeasureTextSpoofingEnabled = resolved.canvasMeasureTextSpoofingEnabled;
   state.webglInfoSpoofingEnabled = resolved.webglInfoSpoofingEnabled;
+  state.mediaDeviceListEnabled = resolved.mediaDeviceListEnabled;
+  state.singleScreenEnabled = resolved.singleScreenEnabled;
   state.siteKey = resolved.siteKey;
   const screenProfileChanged = profileSignature(state.profile) !== profileSignature(resolved.profile);
   state.profile = resolved.profile;
@@ -201,6 +213,8 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
     || initialUserAgentSpoofingEnabled !== resolved.uaSpoofingEnabled
     || initialCanvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
     || initialWebglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
+    || installedSurfaceOwnership.mediaDeviceList !== resolved.mediaDeviceListEnabled
+    || installedSurfaceOwnership.singleScreen !== resolved.singleScreenEnabled
     || initialSiteKey !== resolved.siteKey
     || initialSeed !== resolved.seed
     || initialProfileSignature !== profileSignature(resolved.profile)
@@ -401,7 +415,10 @@ function profileSignature(profile: Profile): string {
     profile.uaMode,
     profile.deviceMemory,
     profile.webglVendor,
-    profile.webglRenderer
+    profile.webglRenderer,
+    profile.screenResolution ?? "auto",
+    profile.keyboardLayout ?? "auto",
+    profile.voices ?? "auto"
   ]);
 }
 
@@ -411,6 +428,8 @@ function profileChanged(resolved: ResolvedProfile): boolean {
     || state.uaSpoofingEnabled !== resolved.uaSpoofingEnabled
     || state.canvasMeasureTextSpoofingEnabled !== resolved.canvasMeasureTextSpoofingEnabled
     || state.webglInfoSpoofingEnabled !== resolved.webglInfoSpoofingEnabled
+    || state.mediaDeviceListEnabled !== resolved.mediaDeviceListEnabled
+    || state.singleScreenEnabled !== resolved.singleScreenEnabled
     || state.siteKey !== resolved.siteKey
     || state.seed !== resolved.seed
     || profileSignature(state.profile) !== profileSignature(resolved.profile)
@@ -536,6 +555,20 @@ function readParentIdentity(): ParentIdentity | null {
               : null;
           } catch {
             // An opener can navigate cross-origin after this frame installs.
+            return null;
+          }
+        },
+        isExtended: () => {
+          try {
+            return (parentGlobal.screen as Screen & { isExtended?: boolean }).isExtended ?? null;
+          } catch {
+            return null;
+          }
+        },
+        mediaDeviceKinds: async () => {
+          try {
+            return Array.from(await parentGlobal.navigator.mediaDevices.enumerateDevices(), (device) => device.kind);
+          } catch {
             return null;
           }
         },
@@ -798,7 +831,8 @@ function patchScreen(realm: Window & typeof globalThis): void {
   if (!prototype || patchedScreenRealms.has(realm)) return;
   patchedScreenRealms.add(realm);
   // Snapshot once, not on resize. Only an actual profile change invalidates it.
-  const derive = (): ProfileScreen | null => screenForProfile(state.profile, realm.navigator.platform, { width: realm.outerWidth, height: realm.outerHeight });
+  const dpr = realm.devicePixelRatio;
+  const derive = (): ProfileScreen | null => screenForProfile(state.profile, realm.navigator.platform, { width: realm.outerWidth, height: realm.outerHeight }, dpr);
   let screen = derive();
   if (realm === window && !parentIdentity) refreshScreenProfile = () => { screen = derive(); };
   const reportedScreen = (): ProfileScreen | null => {
@@ -814,6 +848,7 @@ function patchScreen(realm: Window & typeof globalThis): void {
     return screen;
   };
   for (const property of ["width", "height", "availWidth", "availHeight", "availLeft", "availTop", "isExtended"] as const) {
+    if (property === "isExtended" && !parentIdentity && !installedSurfaceOwnership.singleScreen) continue;
     const descriptor = realm.Object.getOwnPropertyDescriptor(prototype, property);
     const nativeGetter = descriptor?.get;
     // availLeft/availTop and isExtended are not exposed by every browser.
@@ -822,7 +857,11 @@ function patchScreen(realm: Window & typeof globalThis): void {
       ...descriptor,
       get: maskAsNative(wrapNative(nativeGetter, function apply(target, receiver, args) {
         const nativeValue = Reflect.apply(target, receiver, args);
-        if (property === "isExtended") return state.enabled ? false : nativeValue;
+        if (property === "isExtended") {
+          if (!state.enabled) return nativeValue;
+          if (realm !== window) return (window.screen as Screen & { isExtended?: boolean }).isExtended ?? nativeValue;
+          return parentIdentity ? parentIdentity.isExtended() ?? nativeValue : state.singleScreenEnabled ? false : nativeValue;
+        }
         return reportedScreen()?.[property] ?? nativeValue;
       }), nativeGetter)
     });
@@ -857,6 +896,7 @@ function patchScreen(realm: Window & typeof globalThis): void {
 }
 
 function patchMediaDevices(realm: Window & typeof globalThis): void {
+  if (!parentIdentity && !state.mediaDeviceListEnabled) return;
   const prototype = realm.MediaDevices?.prototype;
   const devicePrototype = realm.MediaDeviceInfo?.prototype;
   const inputPrototype = realm.InputDeviceInfo?.prototype;
@@ -894,8 +934,12 @@ function patchMediaDevices(realm: Window & typeof globalThis): void {
   defineMethod(prototype, "enumerateDevices", maskAsNative(wrapNative(nativeEnumerate, function apply(target, receiver, args) {
     // Native validation and permission/policy failures must remain intact.
     const promise = Reflect.apply(target, receiver, args) as Promise<MediaDeviceInfo[]>;
-    return promise.then((devices) => {
-      if (!state.enabled || devices.some((device) => device.label !== "" || device.deviceId !== "")) return devices;
+    return promise.then(async (devices) => {
+      if (!state.enabled || !state.mediaDeviceListEnabled || devices.some((device) => device.label !== "" || device.deviceId !== "")) return devices;
+      if (parentIdentity) {
+        const kinds = await parentIdentity.mediaDeviceKinds();
+        if (kinds && kinds.length === devices.length && kinds.every((kind, index) => devices[index].kind === kind)) return devices;
+      }
       return realm.Array.from(["audioinput", "videoinput", "audiooutput"] as const, (kind) => {
         const nativeDevice = devices.find((device) => device.kind === kind);
         if (nativeDevice) return nativeDevice;

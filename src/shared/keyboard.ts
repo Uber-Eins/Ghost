@@ -1,4 +1,4 @@
-import type { Profile } from "./types";
+import type { Profile, KeyboardLayoutSetting } from "./types";
 
 export type KeyboardLayout = [code: string, key: string][];
 
@@ -29,12 +29,23 @@ const JAPANESE = {
   Backslash: "]", Quote: ":", IntlRo: "\\", IntlYen: "¥"
 };
 
-export function keyboardLayoutForProfile(profile: Pick<Profile, "locale">): KeyboardLayout {
+export const KEYBOARD_LAYOUTS = ["us", "uk", "de", "fr", "jp"] as const;
+
+export function normalizeKeyboardLayout(value: unknown): KeyboardLayoutSetting {
+  return KEYBOARD_LAYOUTS.includes(value as typeof KEYBOARD_LAYOUTS[number]) ? value as KeyboardLayoutSetting : "auto";
+}
+
+export function automaticKeyboardLayout(profile: Pick<Profile, "locale">): Exclude<KeyboardLayoutSetting, "auto"> {
   const locale = profile.locale.toLowerCase();
-  const layout = locale === "en-gb" ? UK
-    : locale === "de" || locale.startsWith("de-") ? GERMAN
-      : locale === "fr-fr" ? FRENCH
-        : locale === "ja-jp" ? JAPANESE : US;
+  return locale === "en-gb" ? "uk"
+    : locale === "de" || locale.startsWith("de-") ? "de"
+      : locale === "fr-fr" ? "fr" : locale === "ja-jp" ? "jp" : "us";
+}
+
+export function keyboardLayoutForProfile(profile: Pick<Profile, "locale" | "keyboardLayout">): KeyboardLayout {
+  const setting = normalizeKeyboardLayout(profile.keyboardLayout);
+  const name = setting === "auto" ? automaticKeyboardLayout(profile) : setting;
+  const layout = { us: US, uk: UK, de: GERMAN, fr: FRENCH, jp: JAPANESE }[name];
   // This is a deterministic data order, not Blink's HashMap iteration order.
   // The page patch retains the native map's order for shared codes.
   return Object.entries(layout).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);

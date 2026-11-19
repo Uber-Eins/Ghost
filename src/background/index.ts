@@ -210,6 +210,8 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
       uaSpoofingEnabled: false,
       canvasMeasureTextSpoofingEnabled: false,
       webglInfoSpoofingEnabled: false,
+      mediaDeviceListEnabled: false,
+      singleScreenEnabled: false,
       reason: "unsupported-url",
       siteKey: unsupportedPageLabel(url),
       seed: stableSeed("", profile.id),
