@@ -12,8 +12,8 @@ const nativeWrapperCode = ts.transpileModule(
 
 const profile = PRESET_PROFILES[0];
 const smallOuter = { width: 1000, height: 600 };
-const derive = (changes = {}, outer = smallOuter) => screenForProfile({ ...profile, ...changes }, "Win32", outer);
-const resolutions = [[1280, 720], [1366, 768], [1440, 900], [1536, 864], [1600, 900], [1920, 1080], [2560, 1440], [2560, 1600], [3840, 2160]];
+const derive = (changes = {}, outer = smallOuter, dpr = 1) => screenForProfile({ ...profile, ...changes }, "Win32", outer, dpr);
+const resolutions = [[1366, 768], [1600, 900], [1920, 1080], [1920, 1200], [2560, 1440], [2560, 1600], [2880, 1800], [3840, 2160]];
 
 test("screenForProfile fixes a resolution per profile id independently of site and session", () => {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": profile.id } });
@@ -113,11 +113,11 @@ collect(ast);
 assert.equal(declarations.length, names.size);
 const code = ts.transpileModule(declarations.join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-function harness() {
-  const context = vm.createContext({ profile: structuredClone(profile), screenForProfile, rewriteScreenMediaQuery });
+function harness(singleScreenEnabled = true) {
+  const context = vm.createContext({ profile: structuredClone(profile), screenForProfile, rewriteScreenMediaQuery, singleScreenEnabled });
   vm.runInContext(`
     var window = globalThis;
-    var state = { enabled: true, uaSpoofingEnabled: true, profile };
+    var state = { enabled: true, uaSpoofingEnabled: true, singleScreenEnabled, mediaDeviceListEnabled: true, profile };
     var parentIdentity = null;
     var patchedScreenRealms = new WeakSet();
     var nativeFunctionSources = new WeakMap();
@@ -140,10 +140,11 @@ function harness() {
     };
     var matchMedia = function matchMedia(query) { return new MediaQueryList(String(query)); };
     var originals = { width: Object.getOwnPropertyDescriptor(Screen.prototype, 'width'), matchMedia,
+      isExtended: Object.getOwnPropertyDescriptor(Screen.prototype, 'isExtended').get,
       media: Object.getOwnPropertyDescriptor(MediaQueryList.prototype, 'media').get };
     var bootstrapProfile = null;
     var reloadOnProfileChangeRequestIds = new Set();
-    var installedSurfaceOwnership = { profileProtection: true, userAgent: true };
+    var installedSurfaceOwnership = { profileProtection: true, userAgent: true, singleScreen: singleScreenEnabled, mediaDeviceList: true };
     function syncUserAgentDataDescriptor() {}
     var cachedUserAgentData = null, cachedLanguages = null, hasResolvedProfile = true, restoredPageNeedsReload = false;
     var initialEnabled = true, initialUserAgentSpoofingEnabled = true;
@@ -158,8 +159,8 @@ function harness() {
 
 test("patchScreen masks prototype getters, preserves branding and native unrelated surfaces", () => {
   const h = harness();
-  assert.equal(h.run("screen.width"), derive().width);
-  assert.equal(h.run("screen.availHeight"), derive().availHeight);
+  assert.equal(h.run("screen.width"), derive({}, smallOuter, 2).width);
+  assert.equal(h.run("screen.availHeight"), derive({}, smallOuter, 2).availHeight);
   assert.equal(h.run("screen.availLeft"), 0);
   assert.equal(h.run("screen.isExtended"), false);
   assert.equal(h.run("screen.colorDepth"), 24);
@@ -231,4 +232,47 @@ test("patchScreen installs in direct child realms and mirrors the parent's scree
   parent.run("outerWidth = 4001; refreshScreenProfile()");
   assert.equal(child.run("screen.width"), 4080);
   assert.equal(child.run("matchMedia('(device-width: 4080px)').matches"), true);
+});
+
+
+test("patchScreen leaves isExtended getter native when single screen is disabled", () => {
+  const h = harness(false);
+  assert.equal(h.run("screen.isExtended"), true);
+  assert.equal(h.run("Object.getOwnPropertyDescriptor(Screen.prototype, 'isExtended').get === originals.isExtended"), true);
+  assert.ok(h.run("screen.width") < 5000);
+});
+
+test("patchScreen snapshots DPR once even when a profile change refreshes dimensions", () => {
+  const h = harness();
+  h.run("devicePixelRatio = 1; state.profile = { ...state.profile, screenResolution: {width: 1920, height: 1080} }; refreshScreenProfile()");
+  assert.equal(h.run("screen.width"), 960);
+  assert.equal(h.run("screen.height"), 540);
+});
+
+test("patchScreen mirrors the related parent's public isExtended", () => {
+  const h = harness();
+  h.run("parentIdentity = { isExtended: () => true }");
+  assert.equal(h.run("screen.isExtended"), true);
+  h.run("parentIdentity.isExtended = () => false");
+  assert.equal(h.run("screen.isExtended"), false);
+  h.run("parentIdentity.isExtended = () => null");
+  assert.equal(h.run("screen.isExtended"), true);
+});
+
+test("applyResolvedProfile reloads when either global surface ownership changes", () => {
+  for (const flag of ["mediaDeviceListEnabled", "singleScreenEnabled"]) {
+    const h = harness();
+    h.run("location.reload = () => { globalThis.reloaded = true }");
+    h.run(`applyResolvedProfile({ ...state, ${flag}: false }, 1)`);
+    assert.equal(h.run("reloaded"), true, flag);
+  }
+});
+
+
+test("profileSignature includes display/input overrides and equates missing fields with automatic", () => {
+  const h = harness();
+  assert.equal(h.run("profileSignature(profile) === profileSignature({ ...profile, screenResolution: 'auto', keyboardLayout: 'auto', voices: 'auto' })"), true);
+  for (const change of ["screenResolution: { width: 1920, height: 1080 }", "keyboardLayout: 'fr'", "voices: 'none'", "voices: ['en-US', 'ja-JP']"]) {
+    assert.equal(h.run(`profileSignature(profile) === profileSignature({ ...profile, ${change} })`), false, change);
+  }
 });

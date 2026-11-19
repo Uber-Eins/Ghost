@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Languages, MapPin, Monitor, UserRound } from "lucide-react";
+import { Keyboard, Languages, MapPin, Monitor, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "./ui/button";
 import { DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -22,6 +22,9 @@ import {
 } from "../../shared/locations";
 import { fixedOffsetMinutes, utcOffsetLabel, utcOffsetMinutes } from "../../shared/timezone";
 import { normalizedPlatformVersionOverride, userAgentMetadataForProfile } from "../../shared/profiles";
+import { automaticScreenPanel, normalizeScreenResolution, SCREEN_RESOLUTIONS } from "../../shared/screen";
+import { automaticKeyboardLayout, KEYBOARD_LAYOUTS, normalizeKeyboardLayout } from "../../shared/keyboard";
+import { automaticVoiceLocales, normalizeVoices, WINDOWS_VOICE_LOCALES } from "../../shared/voices";
 import type { Profile } from "../../shared/types";
 import { regionFlag } from "./profile-card";
 
@@ -266,6 +269,10 @@ export function ProfileEditorDialog({
             ) : null}
           </div>
         </EditorGroup>
+
+        <EditorGroup icon={Keyboard} title={t("sectionDisplayInput")}>
+          <DisplayInputFields key={draft.id} draft={draft} onDraftChange={onDraftChange} />
+        </EditorGroup>
       </div>
 
       <DialogFooter>
@@ -273,6 +280,91 @@ export function ProfileEditorDialog({
         <Button onClick={saveDraft}>{t("saveProfile")}</Button>
       </DialogFooter>
     </DialogContent>
+  );
+}
+
+function DisplayInputFields({ draft, onDraftChange }: { draft: Profile; onDraftChange: (profile: Profile) => void }): React.ReactElement {
+  const fixed = typeof draft.screenResolution === "object" ? draft.screenResolution : null;
+  const panelValue = fixed ? `${fixed.width}x${fixed.height}` : "auto";
+  const isPanel = SCREEN_RESOLUTIONS.some(([width, height]) => `${width}x${height}` === panelValue);
+  const [customScreen, setCustomScreen] = React.useState(!!fixed && !isPanel);
+  const [widthText, setWidthText] = React.useState(String(fixed?.width ?? 1920));
+  const [heightText, setHeightText] = React.useState(String(fixed?.height ?? 1080));
+  const [chooseVoices, setChooseVoices] = React.useState(Array.isArray(draft.voices));
+  const [voiceText, setVoiceText] = React.useState(Array.isArray(draft.voices) ? draft.voices.join(", ") : "");
+  const autoPanel = automaticScreenPanel(draft, window.devicePixelRatio);
+  const keyboardLabels = { us: t("keyboardUS"), uk: t("keyboardUK"), de: t("keyboardGerman"), fr: t("keyboardFrench"), jp: t("keyboardJapanese") };
+  const voiceHint = chooseVoices
+    ? `${t("availableVoicePacks")} ${WINDOWS_VOICE_LOCALES.join(", ")}. ${t("voicePackOrderHint")}`
+    : draft.voices !== "none"
+      ? `${t("automaticVoicePacks")} ${automaticVoiceLocales(draft).join(", ") || t("noLocalVoices")}` : "";
+  const commitScreen = () => {
+    const resolution = normalizeScreenResolution({ width: Number(widthText), height: Number(heightText) });
+    if (resolution === "auto") {
+      setWidthText(String(fixed?.width ?? 1920));
+      setHeightText(String(fixed?.height ?? 1080));
+      return;
+    }
+    setWidthText(String(resolution.width));
+    setHeightText(String(resolution.height));
+    onDraftChange({ ...draft, screenResolution: resolution });
+  };
+  const commitVoices = () => {
+    const voices = normalizeVoices(splitList(voiceText));
+    setVoiceText(Array.isArray(voices) ? voices.join(", ") : "");
+    onDraftChange({ ...draft, voices });
+  };
+  return (
+    <div className="grid gap-4 md:grid-cols-3">
+      <Field label={t("screenResolution")} hint={`${t("screenResolutionHint")} ${t("windowsPlatformOnly")}`}>
+        <Select value={customScreen ? "custom" : panelValue} onValueChange={(value) => {
+          setCustomScreen(value === "custom");
+          if (value === "auto") onDraftChange({ ...draft, screenResolution: "auto" });
+          else {
+            const [width, height] = value === "custom" ? [Number(widthText), Number(heightText)] : value.split("x").map(Number);
+            setWidthText(String(width));
+            setHeightText(String(height));
+            onDraftChange({ ...draft, screenResolution: normalizeScreenResolution({ width, height }) });
+          }
+        }}>
+          <SelectTrigger aria-label={t("screenResolution")}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">{t("automatic")} ({autoPanel[0]}x{autoPanel[1]})</SelectItem>
+            {SCREEN_RESOLUTIONS.map(([width, height]) => <SelectItem key={`${width}x${height}`} value={`${width}x${height}`}>{width} x {height}</SelectItem>)}
+            <SelectItem value="custom">{t("customResolution")}</SelectItem>
+          </SelectContent>
+        </Select>
+        {customScreen ? (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Input aria-label={t("screenWidth")} type="number" min={640} max={7680} step={1} className="font-mono" value={widthText} onChange={(event) => setWidthText(event.target.value)} onBlur={commitScreen} />
+            <Input aria-label={t("screenHeight")} type="number" min={480} max={4320} step={1} className="font-mono" value={heightText} onChange={(event) => setHeightText(event.target.value)} onBlur={commitScreen} />
+          </div>
+        ) : null}
+      </Field>
+      <Field label={t("keyboardLayout")}>
+        <Select value={draft.keyboardLayout ?? "auto"} onValueChange={(value) => onDraftChange({ ...draft, keyboardLayout: normalizeKeyboardLayout(value) })}>
+          <SelectTrigger aria-label={t("keyboardLayout")}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">{t("automatic")} ({keyboardLabels[automaticKeyboardLayout(draft)]})</SelectItem>
+            {KEYBOARD_LAYOUTS.map((layout) => <SelectItem key={layout} value={layout}>{keyboardLabels[layout]}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field label={t("speechVoices")} hint={`${voiceHint} ${t("windowsPlatformOnly")}`}>
+        <Select value={chooseVoices ? "choose" : draft.voices === "none" ? "none" : "auto"} onValueChange={(value) => {
+          setChooseVoices(value === "choose");
+          onDraftChange({ ...draft, voices: value === "choose" ? normalizeVoices(splitList(voiceText)) : value === "none" ? "none" : "auto" });
+        }}>
+          <SelectTrigger aria-label={t("speechVoices")}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">{t("automatic")}</SelectItem>
+            <SelectItem value="none">{t("noLocalVoices")}</SelectItem>
+            <SelectItem value="choose">{t("chooseVoicePacks")}</SelectItem>
+          </SelectContent>
+        </Select>
+        {chooseVoices ? <Input className="mt-2" aria-label={t("voicePacks")} value={voiceText} onChange={(event) => setVoiceText(event.target.value)} onBlur={commitVoices} /> : null}
+      </Field>
+    </div>
   );
 }
 
@@ -404,6 +496,9 @@ export function normalizeProfileDraft(profile: Profile): Profile {
     platformVersion: normalizedPlatformVersionOverride(profile.platformVersion) ?? "",
     userAgent: typeof profile.userAgent === "string" ? profile.userAgent.trim() : "",
     uaMode: "desktop-chromium",
+    screenResolution: normalizeScreenResolution(profile.screenResolution),
+    keyboardLayout: normalizeKeyboardLayout(profile.keyboardLayout),
+    voices: normalizeVoices(profile.voices),
     canvasSeedPolicy: "site",
     latitude: finiteOr(profile.latitude, 0),
     longitude: finiteOr(profile.longitude, 0),

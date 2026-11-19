@@ -13,6 +13,10 @@ import { stableSeed } from "./hash";
 import { normalizeTimezoneId } from "./locations";
 import { applyAutomaticLocation, normalizeAutomaticLocation } from "./automatic-location";
 
+import { normalizeScreenResolution } from "./screen";
+import { normalizeKeyboardLayout } from "./keyboard";
+import { normalizeVoices } from "./voices";
+
 export const STORAGE_KEY = "ghost.settings";
 export const EXCLUDED_DEFAULTS_VERSION = 1;
 export { DEFAULT_EXCLUDED_DOMAINS };
@@ -28,6 +32,8 @@ const MAX_HEADER_VALUE_LENGTH = 1024;
 
 export const DEFAULT_SETTINGS: GhostSettings = {
   enabled: true,
+  mediaDeviceListEnabled: true,
+  singleScreenEnabled: true,
   advancedEnabled: true,
   disableUserAgentSpoofing: false,
   disableCanvasMeasureTextSpoofing: false,
@@ -58,6 +64,8 @@ export function normalizeSettings(input: unknown): GhostSettings {
   const siteProfiles = normalizeSiteProfiles(candidate.siteProfiles, profiles, siteNonces);
   return {
     enabled: booleanValue(candidate.enabled, DEFAULT_SETTINGS.enabled),
+    mediaDeviceListEnabled: booleanValue(candidate.mediaDeviceListEnabled, DEFAULT_SETTINGS.mediaDeviceListEnabled),
+    singleScreenEnabled: booleanValue(candidate.singleScreenEnabled, DEFAULT_SETTINGS.singleScreenEnabled),
     advancedEnabled: booleanValue(candidate.advancedEnabled, DEFAULT_SETTINGS.advancedEnabled),
     disableUserAgentSpoofing: booleanValue(candidate.disableUserAgentSpoofing, DEFAULT_SETTINGS.disableUserAgentSpoofing),
     disableCanvasMeasureTextSpoofing: booleanValue(
@@ -173,6 +181,8 @@ export function resolveProfile(
   return {
     build,
     enabled,
+    mediaDeviceListEnabled: enabled && settings.mediaDeviceListEnabled,
+    singleScreenEnabled: enabled && settings.singleScreenEnabled,
     uaSpoofingEnabled,
     canvasMeasureTextSpoofingEnabled,
     webglInfoSpoofingEnabled,
@@ -311,6 +321,9 @@ function normalizeProfile(profile: Profile): Profile {
     userAgent: sanitizeUserAgent(profile.userAgent),
     uaMode: profile.uaMode === "native" ? "native" : "desktop-chromium",
     deviceMemory: normalizeDeviceMemory(profile.deviceMemory, fallback.deviceMemory),
+    screenResolution: normalizeScreenResolution(profile.screenResolution),
+    keyboardLayout: normalizeKeyboardLayout(profile.keyboardLayout),
+    voices: normalizeVoices(profile.voices),
     canvasSeedPolicy: "site",
     webglVendor: boundedString(profile.webglVendor, fallback.webglVendor, 1024),
     webglRenderer: boundedString(profile.webglRenderer, fallback.webglRenderer, 1024)

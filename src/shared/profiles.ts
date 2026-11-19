@@ -173,7 +173,10 @@ export const PRESET_PROFILE_IDS = new Set(PRESET_PROFILES.map((profile) => profi
 export function cloneProfile(profile: Profile): Profile {
   return {
     ...profile,
-    languages: [...profile.languages]
+    languages: [...profile.languages],
+    screenResolution: typeof profile.screenResolution === "object" ? { ...profile.screenResolution } : "auto",
+    keyboardLayout: profile.keyboardLayout ?? "auto",
+    voices: Array.isArray(profile.voices) ? [...profile.voices] : profile.voices ?? "auto"
   };
 }
 

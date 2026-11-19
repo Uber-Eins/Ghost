@@ -1,4 +1,4 @@
-import type { Profile } from "./types";
+import type { Profile, VoiceSetting } from "./types";
 
 export interface ProfileVoice {
   name: string;
@@ -53,14 +53,22 @@ function voiceLocale(locale: string): string | undefined {
   return exact ?? Object.entries(REGIONAL_FALLBACKS).find(([key]) => key.toLowerCase() === locale.toLowerCase())?.[1];
 }
 
-export function voicesForProfile(profile: Pick<Profile, "locale" | "languages">, reportedPlatform: string): ProfileVoice[] {
-  if (!/^Win/i.test(reportedPlatform)) {
-    return [];
+export const WINDOWS_VOICE_LOCALES = Object.keys(WINDOWS_VOICES);
+
+export function normalizeVoices(value: unknown): VoiceSetting {
+  if (!Array.isArray(value)) return value === "none" ? "none" : "auto";
+  const locales: string[] = [];
+  for (const entry of value) {
+    const locale = typeof entry === "string"
+      ? WINDOWS_VOICE_LOCALES.find((key) => key.toLowerCase() === entry.trim().toLowerCase()) : undefined;
+    if (locale && !locales.includes(locale)) locales.push(locale);
   }
+  return locales.length ? locales : "none";
+}
+
+export function automaticVoiceLocales(profile: Pick<Profile, "locale" | "languages">): string[] {
   const primary = voiceLocale(profile.locale);
-  if (!primary) {
-    return [];
-  }
+  if (!primary) return [];
   const locales = new Set([primary]);
   for (const language of profile.languages) {
     if (language.includes("-")) {
@@ -68,6 +76,14 @@ export function voicesForProfile(profile: Pick<Profile, "locale" | "languages">,
       if (locale) locales.add(locale);
     }
   }
+  return [...locales];
+}
+
+export function voicesForProfile(profile: Pick<Profile, "locale" | "languages" | "voices">, reportedPlatform: string): ProfileVoice[] {
+  if (!/^Win/i.test(reportedPlatform)) return [];
+  const setting = normalizeVoices(profile.voices);
+  const locales = setting === "auto" ? automaticVoiceLocales(profile) : setting === "none" ? [] : setting;
+  if (!locales.length) return [];
   const voices = [...locales].flatMap((lang) => WINDOWS_VOICES[lang].names.map((voice) => {
     const name = `Microsoft ${voice} - ${WINDOWS_VOICES[lang].region}`;
     return { name, lang, voiceURI: name, localService: true, default: false };
