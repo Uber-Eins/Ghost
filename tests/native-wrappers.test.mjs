@@ -537,3 +537,26 @@ test("Blob workers classify the parts Blob consumed and stay native for custom i
     return lastWorkerUrl === tracked && conversions === 1;
   })()`), true);
 });
+
+test("shipped WebGL wrappers change debug identity enums but not the plain enums", () => {
+  const h = page();
+  const { profile } = resolveProfile("https://example.com/path", settings);
+  for (const name of ["WebGLRenderingContext", "WebGL2RenderingContext"]) {
+    assert.equal(h.run(`new ${name}().getParameter(0x1f00)`), "native");
+    assert.equal(h.run(`new ${name}().getParameter(0x1f01)`), "native");
+    assert.equal(h.run(`new ${name}().getParameter(0x9245)`), profile.webglVendor);
+    assert.equal(h.run(`new ${name}().getParameter(0x9246)`), profile.webglRenderer);
+  }
+});
+
+test("the isolated bridge adds no site marker to the DOM", () => {
+  const bridge = readFileSync(new URL("../dist/advanced/content-bridge.js", import.meta.url), "utf8");
+  const h = realm();
+  h.run(`
+    var setAttributes = [];
+    document.documentElement = { setAttribute(...args) { setAttributes.push(args); } };
+    var chrome = { runtime: { onMessage: { addListener() {} } } };
+  `);
+  h.run(bridge);
+  assert.equal(h.run("setAttributes.length"), 0);
+});

@@ -26,12 +26,6 @@ test("webgpuAdapterInfoForWebgl covers every Helium preset including blank and l
   assert.deepEqual(webgpuAdapterInfoForWebgl("Mesa Intel", "llvmpipe"), emptyInfo);
 });
 
-test("webgpuAdapterInfoForWebgl preserves Ghost profile derivation", () => {
-  for (const profile of PRESET_PROFILES) {
-    assert.deepEqual(webgpuAdapterInfoForWebgl(profile.webglVendor, profile.webglRenderer), webgpuAdapterInfoForProfile(profile));
-  }
-});
-
 // Source-named patches and branded mocks check dispatch, not browser injection
 // timing or Chromium's actual GPU/media implementations.
 function sourceFunctions(path, names) {

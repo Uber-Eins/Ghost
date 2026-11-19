@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
-import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, PRESET_PROFILES, resolveProfile } from "../dist/test/test-api.js";
 
 const background = readFileSync(new URL("../dist/advanced/background.js", import.meta.url), "utf8");
 
@@ -467,4 +467,47 @@ test("a settings reply waits for its own DNR update and queued edits start from 
   assert.equal(b.ok, true);
   assert.equal(h.local["ghost.settings"].siteProfiles["a.example"], "los-angeles-en-us");
   assert.equal(h.local["ghost.settings"].siteProfiles["b.example"], "tokyo-ja-jp");
+});
+
+test("the registered bootstrap loads the shipped page bundle and applies its keyboard layout", async () => {
+  const h = harness();
+  const profile = { ...PRESET_PROFILES[0], id: "test-keyboard", keyboardLayout: "de" };
+  const saved = await promptly(h.request({ type: "options.saveState", settings: {
+    ...h.local["ghost.settings"], customProfiles: [profile], siteProfiles: { "*": profile.id }
+  } }));
+  assert.equal(saved.ok, true);
+  const broadcasts = [];
+  const context = vm.createContext({ crypto: webcrypto, URL, postMessage: data => broadcasts.push(structuredClone(data)) });
+  vm.runInContext(`
+    var window = globalThis, top = window, parent = window;
+    var document = { referrer: '' }, location = { href: 'https://example.com/' };
+    var history = {}, addEventListener = () => {}, setTimeout = () => 0;
+    var MessageChannel = class { constructor() { this.port1 = { start() {} }; this.port2 = {}; } };
+    var backing = new WeakMap();
+    var KeyboardLayoutMap = class KeyboardLayoutMap {
+      constructor(entries) { backing.set(this, new Map(entries)); }
+      keys() { return backing.get(this).keys(); }
+      get(key) { return backing.get(this).get(key); }
+    };
+    var nativeLayout = new KeyboardLayoutMap([['KeyY', 'host-y']]);
+    var Keyboard = class Keyboard {
+      getLayoutMap() {
+        if (this !== keyboard) throw new TypeError('Illegal invocation');
+        return Promise.resolve(nativeLayout);
+      }
+    };
+    var keyboard = new Keyboard(), Navigator = class Navigator { get keyboard() { return keyboard; } };
+    var navigator = new Navigator();
+  `, context);
+  for (const script of h.userScripts[0].js) {
+    const source = script.code ?? readFileSync(new URL(`../dist/advanced/${script.file}`, import.meta.url), "utf8");
+    vm.runInContext(source, context);
+  }
+  const layout = await vm.runInContext("navigator.keyboard.getLayoutMap()", context);
+  assert.ok(layout instanceof vm.runInContext("KeyboardLayoutMap", context));
+  assert.equal(layout.get("KeyY"), "z");
+  assert.equal(broadcasts.length, 1);
+  assert.match(broadcasts[0].nonce, /^[a-f0-9]{32}$/);
+  assert.deepEqual(broadcasts[0], { channel: "ghost-profile-v1", type: "connect", nonce: broadcasts[0].nonce });
+  assert.equal(vm.runInContext("'__GHOST_BOOTSTRAP_SETTINGS__' in window", context), false);
 });

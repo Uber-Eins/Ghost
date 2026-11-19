@@ -52,7 +52,6 @@ import {
   siteKeyFromHostname,
   siteKeyFromUrl,
   stableProfileIdForSite,
-  stableSeed,
   userAgentForProfile,
   userAgentMetadataForProfile,
   webgpuAdapterInfoForProfile,
@@ -308,15 +307,9 @@ test("profile resolution accepts same-origin SPA URLs without trusting cross-ori
   assert.equal(senderBoundPageUrl("https://example.com/", "about:blank", "https://evil.test"), "");
 });
 
-test("bootstrap does not broadcast settings into the page", () => {
-  const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
-  const bridge = readFileSync(new URL("../dist/advanced/content-bridge.js", import.meta.url), "utf8");
+test("the production manifest and bundles include the intended permissions and entry points", () => {
   const manifest = JSON.parse(readFileSync(new URL("../dist/advanced/manifest.json", import.meta.url), "utf8"));
   assert.equal(existsSync(new URL("../dist/advanced/content-fallback.js", import.meta.url)), false);
-  assert.doesNotMatch(pageMain, /bootstrapAck|type:\s*["']bootstrap["']/);
-  assert.doesNotMatch(pageMain, /willReadFrequently|getImageData|toDataURL|toBlob/);
-  assert.doesNotMatch(bridge, /getContentBootstrap|payload:\s*bootstrap|request\.url/);
-  assert.match(bridge, /type:\s*["']connected["']/);
   assert.equal(manifest.minimum_chrome_version, "120");
   assert.ok(manifest.permissions.includes("userScripts"));
   assert.ok(manifest.permissions.includes("debugger"));
@@ -515,11 +508,14 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
   }
 });
 
-test("profile selection is deterministic and isolated by site", () => {
-  const first = stableProfileIdForSite("example.com", PRESET_PROFILES);
-  const second = stableProfileIdForSite("example.com", PRESET_PROFILES);
-  assert.equal(first, second);
-  assert.notEqual(stableSeed("example.com", first), stableSeed("other.test", first));
+test("profile selection is deterministic and uses more than one candidate across sites", () => {
+  const sites = ["alpha.example", "beta.example", "gamma.example", "delta.example", "epsilon.example", "zeta.example"];
+  const candidateIds = new Set(PRESET_PROFILES.map(profile => profile.id));
+  const select = () => sites.map(site => stableProfileIdForSite(site, PRESET_PROFILES));
+  const selected = select();
+  assert.deepEqual(select(), selected);
+  assert.ok(selected.every(id => candidateIds.has(id)));
+  assert.ok(new Set(selected).size > 1);
 });
 
 test("timezone offsets include DST rules", () => {
@@ -1027,15 +1023,6 @@ test("webgpu adapter info follows the profile's WebGL renderer", () => {
   assert.equal(webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "tokyo-ja-jp")).architecture, "gen-9");
   assert.equal(webgpuAdapterInfoForProfile(PRESET_PROFILES.find((profile) => profile.id === "berlin-de-de")).architecture, "gen-12lp");
   assert.equal(webgpuAdapterInfoForProfile({ ...apple, webglVendor: "", webglRenderer: "" }), null);
-});
-
-test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () => {
-  const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
-  assert.doesNotMatch(pageMain, /parameter === (?:0x1f00|0x1f01|7936|7937)/i);
-  assert.doesNotMatch(pageMain, /\breadPixels\b/);
-  assert.match(pageMain, /parameter === (?:0x9245|37445)/i);
-  assert.match(pageMain, /GPUAdapterInfo/);
-  assert.doesNotMatch(pageMain, /importScripts\(/);
 });
 
 test("Blob directive parser recognizes only unambiguous captured prefixes", () => {

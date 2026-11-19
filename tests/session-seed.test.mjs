@@ -15,12 +15,10 @@ test("session seed is stable for the same salt, top-level site and profile", () 
   assert.equal(resolve("session-one").seed, resolve("session-one", "https://other.test/frame", url).seed);
 });
 
-test("session seed rotates with the salt", () => {
-  assert.notEqual(resolve("session-one").seed, resolve("session-two").seed);
-});
-
-test("session seed is partitioned by site and profile", () => {
-  assert.notEqual(resolve("session-one").seed, resolve("session-one", "https://other.test/").seed);
+test("session seed rotates across sites, salts and profile ids", () => {
+  const seeds = [url, "https://other.test/"].flatMap(site =>
+    ["session-one", "session-two"].map(salt => resolve(salt, site).seed));
+  assert.equal(new Set(seeds).size, 4);
   const otherProfile = normalizeSettings({ ...settings, siteProfiles: { "*": "new-york-en-us" } });
   assert.notEqual(resolve("session-one").seed, resolveProfile(url, otherProfile, 0, url, "session-one").seed);
 });
