@@ -108,8 +108,8 @@ const setup = `
   nativeMethod(history, 'pushState', { pushState(data, unused, url) {} }.pushState);
   nativeMethod(history, 'replaceState', { replaceState(data, unused, url) {} }.replaceState);
   var blobByUrl = new Map(), lastWorkerUrl, nextUrl = 0;
-  var Blob = class Blob { constructor(parts = [], options = {}) { this.parts = parts; this.type = options.type || ''; } };
-  var Worker = class Worker { constructor(url) { lastWorkerUrl = url; } };
+  var Blob = class Blob { constructor(parts = [], options = {}) { this.parts = [...parts]; this.type = options.type || ''; } };
+  var Worker = class Worker { constructor(url) { lastWorkerUrl = String(url); } };
   var URL = class URL extends HostURL {};
   nativeMethod(URL, 'createObjectURL', { createObjectURL(blob) { const url = 'blob:' + ++nextUrl; blobByUrl.set(url, blob); return url; } }.createObjectURL);
   nativeMethod(URL, 'revokeObjectURL', { revokeObjectURL(url) { blobByUrl.delete(url); } }.revokeObjectURL);
@@ -505,4 +505,35 @@ test("Ghost retains the injected locale where native negotiation drops the profi
   assert.equal(h.run("new nativeIntl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
   assert.equal(h.run("new Intl.PluralRules().resolvedOptions().locale"), "ja-JP");
   assert.equal(h.run("new Intl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
+});
+
+test("Blob workers classify the parts Blob consumed and stay native for custom iterators or URL objects", () => {
+  const h = page();
+  assert.equal(h.run(`(() => {
+    const parts = ['self.strict = false;'];
+    let iteratorCalls = 0;
+    parts[Symbol.iterator] = function* () {
+      if (this !== parts) throw Error('wrong iterable receiver');
+      ++iteratorCalls;
+      yield '"use strict"; self.strict = true;';
+    };
+    const custom = new Blob(parts);
+    const url = URL.createObjectURL(custom);
+    new Worker(url);
+    if (lastWorkerUrl !== url || custom.parts[0] !== '"use strict"; self.strict = true;' || iteratorCalls !== 1) return false;
+    const binary = URL.createObjectURL(new Blob([new Uint8Array([1, 2])]));
+    new Worker(binary);
+    if (lastWorkerUrl !== binary) return false;
+    const proxy = new Proxy(['self.strict = false;'], {
+      get(target, key, receiver) {
+        return key === '0' ? '"use strict"; self.strict = true;' : Reflect.get(target, key, receiver);
+      }
+    });
+    const tracked = URL.createObjectURL(new Blob(proxy));
+    new Worker(tracked);
+    if (lastWorkerUrl === tracked || !blobByUrl.get(lastWorkerUrl).parts[0].startsWith('"use strict";')) return false;
+    let conversions = 0;
+    new Worker({ toString() { ++conversions; return tracked; } });
+    return lastWorkerUrl === tracked && conversions === 1;
+  })()`), true);
 });

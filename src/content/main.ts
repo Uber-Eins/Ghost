@@ -1454,16 +1454,52 @@ function patchWorkers(): void {
     Reflect.apply(nativeRevokeObjectURL, URL, [url]);
   };
 
-  // Preserve classic scripts' directive mode when prefixing the identity
-  // setup. Blob bytes cannot be read synchronously here, so capture only what
-  // is safely known from string parts at construction, after native validation.
+  // Observe exactly what the Blob constructor consumes, not array indices
+  // re-read after native iterable conversion.
+  const arrayIterator = Array.prototype[Symbol.iterator];
+  const arrayIteratorNext = arrayIterator.call([]).next;
   const blobModes = new WeakMap<Blob, boolean>();
   const WrappedBlob = maskAsNative(new Proxy(NativeBlob, {
     construct(target, argumentsList, newTarget) {
+      const parts = argumentsList[0];
+      let strings: string[] | undefined = parts === undefined ? [] : undefined;
+      if (Array.isArray(parts)) {
+        argumentsList[0] = {
+          get [Symbol.iterator]() {
+            const iterate = Reflect.get(parts, Symbol.iterator);
+            if (typeof iterate !== "function") return iterate;
+            return () => {
+              const iterator = Reflect.apply(iterate, parts, []);
+              if (iterate !== arrayIterator) return iterator;
+              return {
+                get next() {
+                  const method = iterator.next;
+                  if (method !== arrayIteratorNext) {
+                    return typeof method === "function" ? () => Reflect.apply(method, iterator, []) : method;
+                  }
+                  strings = [];
+                  return () => {
+                    const result = Reflect.apply(arrayIteratorNext, iterator, []) as IteratorResult<unknown>;
+                    if (!result.done && strings) {
+                      if (typeof result.value === "string") strings.push(result.value);
+                      else strings = undefined;
+                    }
+                    return result;
+                  };
+                },
+                get return() {
+                  const method = iterator.return;
+                  return typeof method === "function" ? () => Reflect.apply(method, iterator, []) : method;
+                }
+              };
+            };
+          }
+        };
+      }
       const blob = Reflect.construct(target, argumentsList, newTarget) as Blob;
-      const strict = strictModeForBlobParts(argumentsList[0]);
-      if (strict !== null) {
-        blobModes.set(blob, strict);
+      if (strings) {
+        const strict = strictModeForBlobParts(strings);
+        if (strict !== null) blobModes.set(blob, strict);
       }
       return blob;
     }
@@ -1538,7 +1574,7 @@ function patchWorkers(): void {
   const WrappedWorker = maskAsNative(new Proxy(NativeWorker, {
     construct(target, argumentsList, newTarget) {
       const [scriptURL, options] = argumentsList as [string | URL, WorkerOptions | undefined];
-      const wrappedURL = wrapBlobWorker(String(scriptURL));
+      const wrappedURL = typeof scriptURL === "string" ? wrapBlobWorker(scriptURL) : null;
       if (wrappedURL) {
         try {
           return Reflect.construct(target, [wrappedURL, options], newTarget);

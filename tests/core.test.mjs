@@ -1038,8 +1038,7 @@ test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () 
   assert.doesNotMatch(pageMain, /importScripts\(/);
 });
 
-test("Blob worker composition preserves known directive modes without reading user getters", () => {
-  assert.equal(strictModeForBlobParts(undefined), false);
+test("Blob directive parser recognizes only unambiguous captured prefixes", () => {
   assert.equal(strictModeForBlobParts([]), false);
   assert.equal(strictModeForBlobParts(["self.postMessage(1);"]), false);
   assert.equal(strictModeForBlobParts(['"use ', 'strict";\nself.postMessage(1);']), true);
@@ -1050,16 +1049,7 @@ test("Blob worker composition preserves known directive modes without reading us
   assert.equal(strictModeForBlobParts(['"use strict"\n(function(){})()']), null);
   assert.equal(strictModeForBlobParts(['"use strict" /* comment */;']), null);
   assert.equal(strictModeForBlobParts(["#!/usr/bin/env node\nself.postMessage(1);"]), null);
-  assert.equal(strictModeForBlobParts([new Uint8Array([1, 2])]), null);
-  assert.equal(strictModeForBlobParts(["/", new Uint8Array([1, 2])]), null);
-  let accesses = 0;
-  const parts = [];
-  Object.defineProperty(parts, "0", { get() { accesses += 1; return '"use strict";'; } });
-  assert.equal(strictModeForBlobParts(parts), null);
-  assert.equal(accesses, 0);
-  const iterable = { *[Symbol.iterator]() { accesses += 1; yield "self.postMessage(1);"; } };
-  assert.equal(strictModeForBlobParts(iterable), null);
-  assert.equal(accesses, 0);
+
 });
 
 test("client hints platform version never describes an impossible OS", () => {
