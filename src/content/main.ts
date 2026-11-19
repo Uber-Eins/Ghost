@@ -1240,10 +1240,6 @@ function patchFontFaceSet(): void {
 
   defineMethod(prototype, "check", maskAsNative(wrapNative(nativeCheck, (_target, receiver, args) => Reflect.apply(patchedCheck, receiver, args)), nativeCheck));
   defineMethod(prototype, "load", maskAsNative(wrapNative(nativeLoad, (_target, receiver, args) => Reflect.apply(patchedLoad, receiver, args)), nativeLoad));
-  if (fontSet) {
-    defineMethod(fontSet, "check", patchedCheck);
-    defineMethod(fontSet, "load", patchedLoad);
-  }
 }
 
 function patchCanvas(): void {

@@ -92,7 +92,7 @@ const setup = `
   } }.measureText);
   var FontFaceSet = class FontFaceSet { [Symbol.iterator]() { return [][Symbol.iterator](); } };
   nativeMethod(FontFaceSet.prototype, 'check', { check(font, text) { return true; } }.check);
-  nativeMethod(FontFaceSet.prototype, 'load', { load(font, text) { return Promise.resolve([]); } }.load);
+  nativeMethod(FontFaceSet.prototype, 'load', { load(font, text) { return Promise.resolve(['native face']); } }.load);
   document.fonts = new FontFaceSet();
   var WebGLRenderingContext = class WebGLRenderingContext {};
   nativeMethod(WebGLRenderingContext.prototype, 'getParameter', { getParameter(parameter) { return 'native'; } }.getParameter);
@@ -455,4 +455,18 @@ test("synchronous blank iframe and popup access uses only the protected parent's
   const before = child.run("Function.prototype.toString");
   child.run(pageRelated);
   assert.equal(child.run("Function.prototype.toString"), before);
+});
+
+test("document.fonts inherits native-masked wrappers without own methods", async () => {
+  const h = page();
+  for (const name of ["check", "load"]) {
+    const method = h.run(`document.fonts.${name}`);
+    assert.equal(method, h.run(`FontFaceSet.prototype.${name}`));
+    assert.equal(h.run(`Object.hasOwn(document.fonts, '${name}')`), false);
+    assert.match(method.toString(), /\[native code\]/);
+  }
+  assert.equal(h.run('document.fonts.check("16px Microsoft YaHei")'), false);
+  assert.equal(h.run('document.fonts.check("16px sans-serif")'), true);
+  assert.deepEqual(Array.from(await h.run('document.fonts.load("16px Microsoft YaHei")')), []);
+  assert.deepEqual(Array.from(await h.run('document.fonts.load("16px sans-serif")')), ["native face"]);
 });
