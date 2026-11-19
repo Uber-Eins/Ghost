@@ -11,7 +11,7 @@
     import { DEFAULT_SETTINGS, PRESET_PROFILES } from "../dist/test/test-api.js";
 
     const query = new URLSearchParams(location.search);
-    const language = query.get("lang") === "zh_CN" ? "zh_CN" : "en";
+    const language = query.get("lang") === "zh_TW" ? "zh_TW" : "en";
     const base = new URL("../dist/advanced/", location.href);
     const messages = await fetch(new URL(`_locales/${language}/messages.json`, base)).then((response) => response.json());
     const profile = {

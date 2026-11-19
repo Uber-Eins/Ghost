@@ -24,6 +24,9 @@
   "mediaDeviceListSubtitle": { "message": "Sites without camera or microphone permission see one microphone, camera and speaker." },
   "singleScreen": { "message": "Report a single screen" },
   "singleScreenSubtitle": { "message": "Sites see screen.isExtended as false." },
+  "uiLanguage": { "message": "Interface language" },
+  "uiLanguageSubtitle": { "message": "Language of Ghost's popup and settings pages." },
+  "uiLanguageAuto": { "message": "Auto (browser language)" },
   "extensionName": {
     "message": "Ghost Privacy"
   },
