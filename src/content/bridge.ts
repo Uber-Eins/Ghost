@@ -1,5 +1,4 @@
 import { isSupportedPageUrl } from "../shared/internal";
-import { siteKeyFromUrl } from "../shared/site";
 import type { ResolvedProfile, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
@@ -64,8 +63,6 @@ if (initialPageUrl) {
       profileNonce = null;
     }
   });
-
-  document.documentElement?.setAttribute("data-ghost-site", siteKeyFromUrl(initialPageUrl));
 }
 
 async function publishProfile(port: MessagePort, nonce: string, requestId?: number): Promise<void> {

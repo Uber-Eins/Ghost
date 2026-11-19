@@ -4,7 +4,6 @@ export { keyboardLayoutForProfile } from "./shared/keyboard";
 export { canvasFontHasBlockedFamily, profileAllowsCjkFonts, sanitizeCanvasFont } from "./shared/fonts";
 export { constructDateWithNewTarget } from "./shared/date-constructor";
 export { strictModeForBlobParts } from "./shared/worker-blob";
-export { repairContentBootstrap } from "./background/bootstrap";
 export { fnv1a, stableSeed } from "./shared/hash";
 export {
   applyHeliumFlagDetection,
@@ -32,6 +31,7 @@ export {
 export {
   allProfiles,
   cloneProfile,
+  effectiveGeolocation,
   appVersionForProfile,
   navigatorPlatformForProfile,
   navigatorVendorForProfile,
@@ -69,12 +69,9 @@ export {
   DEFAULT_EXCLUDED_DOMAINS,
   DEFAULT_SETTINGS,
   headerRulesAllowed,
-  loadSettings,
   normalizeSettings,
   profileIdForSiteKey,
   profilesFromSettings,
-  resolveProfile,
-  saveSettings,
-  updateSettings
+  resolveProfile
 } from "./shared/storage";
 export type { GhostSettings } from "./shared/types";

@@ -125,10 +125,10 @@ test("resolveProfile carries global media and single-screen flags gated by prote
   for (const mediaDeviceListEnabled of [true, false]) {
     for (const singleScreenEnabled of [true, false]) {
       const settings = normalizeSettings({ mediaDeviceListEnabled, singleScreenEnabled });
-      const resolved = resolveProfile("https://example.test", settings, "lite");
+      const resolved = resolveProfile("https://example.test", settings);
       assert.equal(resolved.mediaDeviceListEnabled, mediaDeviceListEnabled);
       assert.equal(resolved.singleScreenEnabled, singleScreenEnabled);
-      const disabled = resolveProfile("https://example.test", { ...settings, enabled: false }, "advanced");
+      const disabled = resolveProfile("https://example.test", { ...settings, enabled: false });
       assert.equal(disabled.mediaDeviceListEnabled, false);
       assert.equal(disabled.singleScreenEnabled, false);
     }

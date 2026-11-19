@@ -8,7 +8,7 @@ import {
   normalizeSiteRuleKey,
   siteKeyFromUrl
 } from "./site";
-import type { GhostSettings, Profile, ResolvedProfile, BuildTarget } from "./types";
+import type { GhostSettings, Profile, ResolvedProfile } from "./types";
 import { stableSeed } from "./hash";
 import { normalizeTimezoneId } from "./locations";
 import { applyAutomaticLocation, normalizeAutomaticLocation } from "./automatic-location";
@@ -53,7 +53,6 @@ export const DEFAULT_SETTINGS: GhostSettings = {
   hiddenPresetProfileIds: []
 };
 
-let settingsWriteQueue: Promise<void> = Promise.resolve();
 
 export function normalizeSettings(input: unknown): GhostSettings {
   const candidate = typeof input === "object" && input !== null ? input as Partial<GhostSettings> : {};
@@ -98,32 +97,8 @@ export async function loadSettings(): Promise<GhostSettings> {
   return normalizeSettings(result[STORAGE_KEY]);
 }
 
-export async function readSettings(): Promise<GhostSettings> {
-  return enqueueSettingsWrite(loadSettings);
-}
-
 export async function saveSettings(settings: GhostSettings): Promise<void> {
-  await enqueueSettingsWrite(() => writeSettings(settings));
-}
-
-export async function updateSettings(mutator: (settings: GhostSettings) => void | Promise<void>): Promise<GhostSettings> {
-  return enqueueSettingsWrite(async () => {
-    const settings = await loadSettings();
-    await mutator(settings);
-    const normalized = normalizeSettings(settings);
-    await writeSettings(normalized);
-    return normalized;
-  });
-}
-
-async function writeSettings(settings: GhostSettings): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: normalizeSettings(settings) });
-}
-
-function enqueueSettingsWrite<T>(operation: () => Promise<T>): Promise<T> {
-  const pending = settingsWriteQueue.then(operation, operation);
-  settingsWriteQueue = pending.then(() => undefined, () => undefined);
-  return pending;
+  await chrome.storage.local.set({ [STORAGE_KEY]: settings });
 }
 
 export function profilesFromSettings(settings: GhostSettings): Profile[] {
@@ -157,7 +132,6 @@ export function ensureSiteAssignment(settings: GhostSettings, siteKey: string): 
 export function resolveProfile(
   url: string,
   settings: GhostSettings,
-  build: BuildTarget,
   now = Date.now(),
   partitionUrl = url,
   sessionSalt?: string
@@ -179,7 +153,6 @@ export function resolveProfile(
   const webglInfoSpoofingEnabled = enabled && !settings.disableWebglInfoSpoofing;
 
   return {
-    build,
     enabled,
     mediaDeviceListEnabled: enabled && settings.mediaDeviceListEnabled,
     singleScreenEnabled: enabled && settings.singleScreenEnabled,
@@ -192,7 +165,6 @@ export function resolveProfile(
     seed: stableSeed(siteKey, profile.id, sessionSalt ? `session:${sessionSalt}` : undefined),
     profile,
     advanced: {
-      available: build === "advanced",
       attempted: false,
       applied: false
     }

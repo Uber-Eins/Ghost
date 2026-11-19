@@ -7,14 +7,13 @@ import { canvasFontHasBlockedFamily, sanitizeCanvasFont } from "../shared/fonts"
 import { strictModeForBlobParts } from "../shared/worker-blob";
 import { workerIdentityPrelude as buildWorkerIdentityPrelude } from "../shared/worker-prelude";
 import { isSupportedPageUrl } from "../shared/internal";
-import { appVersionForProfile, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
+import { appVersionForProfile, effectiveGeolocation, fallbackProfileForSite, navigatorPlatformForProfile, navigatorVendorForProfile, userAgentForProfile, userAgentMetadataForProfile, webgpuAdapterInfoForProfile, webgpuAdapterInfoForWebgl, type WebgpuAdapterInfo } from "../shared/profiles";
 import { DEFAULT_EXCLUDED_DOMAINS, DEFAULT_SITE_RULE, isExcludedUrl, siteKeyFromUrl } from "../shared/site";
 import { installTimePatches } from "../shared/time-patch";
 import { normalizeSettings, resolveProfile } from "../shared/storage";
-import type { BuildTarget, GhostSettings, Profile, ResolvedProfile } from "../shared/types";
+import type { GhostSettings, Profile, ResolvedProfile } from "../shared/types";
 
 declare const __GHOST_CHANNEL__: string;
-declare const __GHOST_BUILD__: BuildTarget;
 declare const __GHOST_RELATED_ONLY__: boolean;
 
 interface GhostState {
@@ -31,18 +30,12 @@ interface GhostState {
 
 interface BootstrapPayload {
   sessionSalt?: string;
-  build?: BuildTarget;
   settings?: GhostSettings;
 }
 
-interface GhostController {
-  readonly installed: true;
-}
-
-// What a same-origin parent Ghost realm reports, read through its public
-// surfaces so the parent never has to expose its settings or canvas seed.
+// A related document inherits the protected parent’s resolved policy, not defaults.
 interface ParentIdentity {
-  profile: Pick<Profile, "locale" | "languages" | "deviceMemory" | "timezoneId" | "intlLocale">;
+  policy: GhostState;
   localVoices: () => ProfileVoice[] | null;
   screen: () => ProfileScreen | null;
   isExtended: () => boolean | null;
@@ -64,20 +57,27 @@ interface NavigatorDescriptorSnapshot {
 
 const ghostGlobal = globalThis as typeof globalThis & {
   __GHOST_BOOTSTRAP_SETTINGS__?: BootstrapPayload;
-  __GHOST_PAGE_CONTROLLER__?: GhostController;
 };
 
-ghostControllerInitialization: {
+const POLICY_LOOKUP = "\u2063ghost-private-policy-v1";
+
+pageInitialization: {
 if (__GHOST_RELATED_ONLY__ && isSupportedPageUrl(location.href)) {
-  break ghostControllerInitialization;
+  break pageInitialization;
 }
-const existingController = ghostGlobal.__GHOST_PAGE_CONTROLLER__;
 const pendingBootstrap = takeBootstrapPayload();
-if (existingController) {
-  break ghostControllerInitialization;
+if (readRealmPolicy(window)) {
+  break pageInitialization;
 }
 
-const NativeDate = Date;
+const parentIdentity = __GHOST_RELATED_ONLY__ ? readParentIdentity() : null;
+if (__GHOST_RELATED_ONLY__ && !parentIdentity) {
+  break pageInitialization;
+}
+const initialPageUrl = currentGhostPageUrl();
+if (!initialPageUrl || isExcludedUrl(initialPageUrl, pendingBootstrap?.settings?.excludedDomains ?? DEFAULT_EXCLUDED_DOMAINS)) {
+  break pageInitialization;
+}
 const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "language",
   "languages",
@@ -89,33 +89,24 @@ const nativeNavigatorDescriptors = snapshotNavigatorDescriptors([
   "deviceMemory"
 ]);
 const nativeNavigator = snapshotNavigator();
-const nativeGeolocation = navigator.geolocation;
-// A related about:blank/srcdoc frame or popup has no bootstrap settings. When
-// the page that created it runs Ghost, report what that page reports instead
-// of the fallback profile.
-const parentIdentity = __GHOST_RELATED_ONLY__ ? readParentIdentity() : null;
-const initialPageUrl = currentGhostPageUrl();
 const initialTopLevelUrl = currentTopLevelGhostPageUrl(initialPageUrl);
 const fallbackSiteKey = siteKeyFromUrl(initialTopLevelUrl);
-const bootstrapProfile = pendingBootstrap
-  ? resolveBootstrapPayload(pendingBootstrap, initialPageUrl, initialTopLevelUrl)
-  : null;
-const baseProfile = bootstrapProfile?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
-const fallbackProfile: Profile = parentIdentity ? { ...baseProfile, ...parentIdentity.profile } : baseProfile;
-const initialEnabled = bootstrapProfile?.enabled ?? (initialPageUrl ? !isExcludedUrl(initialPageUrl, DEFAULT_EXCLUDED_DOMAINS) : false);
-const initialUserAgentSpoofingEnabled = bootstrapProfile?.uaSpoofingEnabled
-  ?? (parentIdentity ? parentIdentity.userAgent !== null : initialEnabled);
-const initialCanvasMeasureTextSpoofingEnabled = bootstrapProfile?.canvasMeasureTextSpoofingEnabled ?? initialEnabled;
-const initialWebglInfoSpoofingEnabled = bootstrapProfile?.webglInfoSpoofingEnabled ?? initialEnabled;
-const initialSiteKey = bootstrapProfile?.siteKey ?? fallbackSiteKey;
-const initialSeed = bootstrapProfile?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
+const bootstrapProfile = resolveBootstrapPayload(pendingBootstrap, initialPageUrl, initialTopLevelUrl);
+const initialPolicy = parentIdentity?.policy ?? bootstrapProfile;
+const fallbackProfile = initialPolicy?.profile ?? fallbackProfileForSite(DEFAULT_SITE_RULE);
+const initialEnabled = initialPolicy?.enabled ?? true;
+const initialUserAgentSpoofingEnabled = initialPolicy?.uaSpoofingEnabled ?? initialEnabled;
+const initialCanvasMeasureTextSpoofingEnabled = initialPolicy?.canvasMeasureTextSpoofingEnabled ?? initialEnabled;
+const initialWebglInfoSpoofingEnabled = initialPolicy?.webglInfoSpoofingEnabled ?? initialEnabled;
+const initialSiteKey = initialPolicy?.siteKey ?? fallbackSiteKey;
+const initialSeed = initialPolicy?.seed ?? stableSeed(fallbackSiteKey, fallbackProfile.id);
 const state: GhostState = {
   enabled: initialEnabled,
   uaSpoofingEnabled: initialUserAgentSpoofingEnabled,
   canvasMeasureTextSpoofingEnabled: initialCanvasMeasureTextSpoofingEnabled,
   webglInfoSpoofingEnabled: initialWebglInfoSpoofingEnabled,
-  mediaDeviceListEnabled: bootstrapProfile?.mediaDeviceListEnabled ?? initialEnabled,
-  singleScreenEnabled: bootstrapProfile?.singleScreenEnabled ?? initialEnabled,
+  mediaDeviceListEnabled: initialPolicy?.mediaDeviceListEnabled ?? initialEnabled,
+  singleScreenEnabled: initialPolicy?.singleScreenEnabled ?? initialEnabled,
   siteKey: initialSiteKey,
   profile: fallbackProfile,
   seed: initialSeed
@@ -146,7 +137,6 @@ let restoredPageNeedsReload = false;
 const reloadOnProfileChangeRequestIds = new Set<number>();
 let cachedUserAgentData: { key: string; value: object } | null = null;
 let cachedLanguages: { key: string; value: readonly string[] } | null = null;
-const synchronizedChildNavigators = new WeakSet<object>();
 const patchedSpeechRealms = new WeakSet<object>();
 const patchedKeyboardRealms = new WeakSet<object>();
 const patchedScreenRealms = new WeakSet<object>();
@@ -156,20 +146,12 @@ const patchedWebgpuRealms = new WeakSet<object>();
 const webgpuInfoReaders = new WeakMap<object, () => WebgpuAdapterInfo>();
 let refreshScreenProfile: (() => void) | null = null;
 
-Object.defineProperty(ghostGlobal, "__GHOST_PAGE_CONTROLLER__", {
-  configurable: false,
-  enumerable: false,
-  writable: false,
-  value: Object.freeze({ installed: true as const })
-});
+install();
+if (!parentIdentity) connectBridge();
 
-if (initialPageUrl) {
-  install();
-  // A frame mirroring its parent stays with the parent's identity; a later
-  // resolved profile could only disagree with it or reload the frame.
-  if (!parentIdentity) {
-    connectBridge();
-  }
+function readRealmPolicy(realm: Window): GhostState | undefined {
+  const toString = (realm as Window & typeof globalThis).Function.prototype.toString;
+  return Reflect.get(toString, POLICY_LOOKUP) as GhostState | undefined;
 }
 
 function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): void {
@@ -224,23 +206,14 @@ function applyResolvedProfile(resolved: ResolvedProfile, requestId: number): voi
 }
 
 function install(): void {
-  if ((window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled) {
-    return;
-  }
-  (window as unknown as { __ghostInstalled?: boolean }).__ghostInstalled = true;
-
+  if (!installedSurfaceOwnership.profileProtection) return;
   patchFunctionToString();
-  if (!installedSurfaceOwnership.profileProtection) {
-    // Excluded documents (including Turnstile challenge frames) must keep
-    // profile-related prototypes native.
-    return;
-  }
   patchNavigator();
   patchSpeechSynthesis(window);
   patchKeyboard(window);
   patchScreen(window);
   patchMediaDevices(window);
-  patchIframeNavigatorAccess();
+  patchRelatedWindowAccess();
   installTimePatches({
     enabled: () => state.enabled,
     intlLocale: () => state.profile.intlLocale,
@@ -454,8 +427,7 @@ function resolveBootstrapPayload(
   if (!payload?.settings || !pageUrl) {
     return null;
   }
-  const build = payload.build === "advanced" ? "advanced" : __GHOST_BUILD__;
-  return resolveProfile(pageUrl, normalizeSettings(payload.settings), build, Date.now(), topLevelUrl,
+  return resolveProfile(pageUrl, normalizeSettings(payload.settings), Date.now(), topLevelUrl,
     typeof payload.sessionSalt === "string" ? payload.sessionSalt : undefined);
 }
 
@@ -517,33 +489,13 @@ function snapshotNavigator(): Record<string, unknown> {
 function readParentIdentity(): ParentIdentity | null {
   for (const candidate of [window.parent, window.opener as Window | null]) {
     try {
-      if (!candidate || candidate === window || !(candidate as unknown as typeof ghostGlobal).__GHOST_PAGE_CONTROLLER__) {
-        continue;
-      }
+      if (!candidate || candidate === window) continue;
       const parentGlobal = candidate as Window & typeof globalThis;
+      const policy = readRealmPolicy(parentGlobal);
+      if (!policy?.enabled || !policy.profile) continue;
       const nav = parentGlobal.navigator as unknown as Record<string, unknown>;
-      const options = new parentGlobal.Intl.DateTimeFormat().resolvedOptions();
-      const userAgentData = "userAgentData" in nav ? nav.userAgentData as object | undefined : undefined;
-      const userAgent = {
-        platform: nav.platform,
-        vendor: nav.vendor,
-        userAgent: nav.userAgent,
-        appVersion: nav.appVersion,
-        userAgentData
-      };
-      // Same browser, so a parent reporting this frame's native values does
-      // not own them and the frame can leave them native.
-      const userAgentOwned = (["platform", "vendor", "userAgent", "appVersion"] as const)
-        .some((property) => userAgent[property] !== nativeNavigator[property])
-        || JSON.stringify(userAgentData ?? null) !== JSON.stringify(nativeNavigator.userAgentData ?? null);
       return {
-        profile: {
-          locale: String(nav.language),
-          languages: Array.from(nav.languages as ArrayLike<string>, String),
-          deviceMemory: nav.deviceMemory as number,
-          timezoneId: options.timeZone,
-          intlLocale: options.locale
-        },
+        policy,
         // UA values alone cannot reveal ownership on a host whose native UA
         // already matches the profile. Read this surface publicly as well.
         localVoices: () => {
@@ -582,7 +534,10 @@ function readParentIdentity(): ParentIdentity | null {
             return null;
           }
         },
-        userAgent: userAgentOwned ? userAgent : null
+        userAgent: policy.uaSpoofingEnabled ? {
+          platform: nav.platform, vendor: nav.vendor, userAgent: nav.userAgent, appVersion: nav.appVersion,
+          userAgentData: nav.userAgentData as object | undefined
+        } : null
       };
     } catch {
       // Cross-origin or detached parents cannot be read.
@@ -631,20 +586,24 @@ function maskAsNative<T>(wrapper: T, native: unknown): T {
   return wrapper;
 }
 
-function patchFunctionToString(realm: Window & typeof globalThis = window): void {
+function patchFunctionToString(realm: Window & typeof globalThis = window): boolean {
   const nativeToString = realm.Function.prototype.toString;
-  const maskedToString = wrapNative(nativeToString, (target, receiver, args) =>
-    Reflect.apply(target, nativeFunctionSources.get(receiver) ?? receiver, args)
-  );
+  const maskedToString = new Proxy(nativeToString, {
+    apply: (target, receiver, args) => Reflect.apply(target, nativeFunctionSources.get(receiver) ?? receiver, args),
+    // The policy lookup adds no property to the native target or the window.
+    get: (target, key, receiver) => key === POLICY_LOOKUP && receiver === maskedToString
+      ? cloneJson(state)
+      : Reflect.get(target, key, receiver)
+  });
   nativeFunctionSources.set(maskedToString, nativeToString);
   try {
     Object.defineProperty(realm.Function.prototype, "toString", {
-      configurable: true,
-      writable: true,
+      ...Object.getOwnPropertyDescriptor(realm.Function.prototype, "toString"),
       value: maskedToString
     });
+    return true;
   } catch {
-    // Leave toString native if the page froze Function.prototype.
+    return false;
   }
 }
 
@@ -674,156 +633,80 @@ function patchNavigator(): void {
   }
 }
 
-function patchIframeNavigatorAccess(): void {
+function patchRelatedWindowAccess(): void {
   const prototype = window.HTMLIFrameElement?.prototype;
-  if (!prototype) {
-    return;
+  for (const key of ["contentWindow", "contentDocument"] as const) {
+    const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key);
+    const native = descriptor?.get;
+    if (!descriptor?.configurable || !native) continue;
+    Object.defineProperty(prototype, key, {
+      ...descriptor,
+      get: maskAsNative(wrapNative(native, (target, receiver, args) => {
+        const result = Reflect.apply(target, receiver, args);
+        synchronizeRelatedWindow(key === "contentWindow" ? result : result?.defaultView);
+        return result;
+      }), native)
+    });
   }
-
-  const contentWindowDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentWindow");
-  const nativeGetContentWindow = contentWindowDescriptor?.get;
-  if (contentWindowDescriptor && nativeGetContentWindow) {
-    const wrappedGetter = maskAsNative(wrapNative(nativeGetContentWindow, function apply(target, thisArgument, argumentsList) {
-      const childWindow = Reflect.apply(target, thisArgument, argumentsList) as Window | null;
-      synchronizeChildNavigator(childWindow);
-      return childWindow;
-    }), nativeGetContentWindow);
-    try {
-      Object.defineProperty(prototype, "contentWindow", {
-        ...contentWindowDescriptor,
-        get: wrappedGetter
-      });
-    } catch {
-      // Other iframe entry points and all-frame injection still provide coverage.
-    }
-  }
-
-  const contentDocumentDescriptor = Object.getOwnPropertyDescriptor(prototype, "contentDocument");
-  const nativeGetContentDocument = contentDocumentDescriptor?.get;
-  if (contentDocumentDescriptor && nativeGetContentDocument) {
-    const wrappedGetter = maskAsNative(wrapNative(nativeGetContentDocument, function apply(target, thisArgument, argumentsList) {
-      const childDocument = Reflect.apply(target, thisArgument, argumentsList) as Document | null;
-      synchronizeChildNavigator(childDocument?.defaultView ?? null);
-      return childDocument;
-    }), nativeGetContentDocument);
-    try {
-      Object.defineProperty(prototype, "contentDocument", {
-        ...contentDocumentDescriptor,
-        get: wrappedGetter
-      });
-    } catch {
-      // Other iframe entry points and all-frame injection still provide coverage.
-    }
+  const nativeOpen = window.open;
+  if (typeof nativeOpen === "function") {
+    defineMethod(window, "open", maskAsNative(wrapNative(nativeOpen, (target, receiver, args) => {
+      const result = Reflect.apply(target, receiver, args);
+      synchronizeRelatedWindow(result);
+      return result;
+    }), nativeOpen));
   }
 }
 
-function synchronizeChildNavigator(childWindow: Window | null): void {
-  if (!childWindow || childWindow === window) {
-    return;
-  }
-
+function synchronizeRelatedWindow(child: (Window & typeof globalThis) | null): void {
+  if (!child || child === window || !state.enabled) return;
   try {
-    const childGlobal = childWindow as Window & typeof globalThis;
-    const childNavigator = childGlobal.navigator;
-    // A related about:blank/srcdoc frame can install Ghost with fallback
-    // settings before it receives the parent's resolved profile. Its controller
-    // therefore must not prevent the parent from synchronizing direct access.
-    if (!childNavigator || synchronizedChildNavigators.has(childNavigator)) {
-      return;
-    }
-    const childPrototype = Object.getPrototypeOf(childNavigator) as object | null;
-    if (!childPrototype) {
-      return;
-    }
-
-    let languagesCache: { key: string; value: readonly string[] } | null = null;
-    // User-Agent surfaces are checked even when Ghost does not own them: a
-    // child install that could not read this page falls back to the default
-    // profile. Values the child already reports are left to the child, which
-    // keeps objects such as userAgentData in the child's own realm.
-    const properties = [
-      "language",
-      "languages",
-      "deviceMemory",
-      "platform",
-      "vendor",
-      "userAgent",
-      "appVersion",
-      "userAgentData"
-    ];
-    for (const property of properties) {
-      const mainNavigator = navigator as unknown as Record<string, unknown>;
-      if (!(property in mainNavigator)) {
-        const owner = findDescriptorOwner(childPrototype, property);
-        if (owner) {
-          try {
-            delete (owner as Record<string, unknown>)[property];
-          } catch {
-            // Ignore a locked child-realm descriptor.
-          }
-        }
-        continue;
-      }
-      if (sameJson((childNavigator as unknown as Record<string, unknown>)[property], mainNavigator[property])) {
-        continue;
-      }
-
+    const url = child.location.href;
+    if (url !== "about:blank" && url !== "about:srcdoc") return;
+    if (child.parent !== window && child.opener !== window) return;
+    const parentUrl = isSupportedPageUrl(location.href) ? location.href : initialPageUrl;
+    const exclusions = pendingBootstrap?.settings?.excludedDomains ?? DEFAULT_EXCLUDED_DOMAINS;
+    if (isExcludedUrl(parentUrl, exclusions) || readRealmPolicy(child)) return;
+    // Chromium may not inject into the initial empty document. These surfaces
+    // can be synchronized synchronously; navigated documents install themselves.
+    if (!patchFunctionToString(child)) return;
+    const childPrototype = child.Navigator.prototype;
+    const profileProperties = ["language", "languages", "deviceMemory"];
+    const uaProperties = ["platform", "vendor", "userAgent", "appVersion", "userAgentData"];
+    const parentNavigator = navigator as unknown as Record<string, unknown>;
+    let languagesCache: { source: unknown; copy: readonly string[] } | undefined;
+    for (const property of state.uaSpoofingEnabled ? [...profileProperties, ...uaProperties] : profileProperties) {
       const owner = findDescriptorOwner(childPrototype, property) ?? childPrototype;
       const descriptor = Object.getOwnPropertyDescriptor(owner, property);
-      const mirroredValue = (): unknown => {
-        const value = mainNavigator[property];
-        if (property !== "languages" || !Array.isArray(value)) {
-          return value;
-        }
-        const key = JSON.stringify(value);
-        if (languagesCache?.key !== key) {
-          const childLanguages = childGlobal.Array.from(value) as string[];
-          languagesCache = {
-            key,
-            value: childGlobal.Object.freeze(childLanguages)
-          };
-        }
-        return languagesCache.value;
-      };
-      const getter = descriptor?.get
-        ? nativeLookingGetter(descriptor.get, mirroredValue)
-        : childGlobal.Object.getOwnPropertyDescriptor({ get [property]() { return mirroredValue(); } }, property)!.get;
-      try {
-        Object.defineProperty(owner, property, {
-          configurable: true,
-          enumerable: descriptor?.enumerable ?? true,
-          get: getter
-        });
-      } catch {
-        // Leave locked child prototypes native rather than shadowing navigator.
+      if (descriptor && !descriptor.configurable) continue;
+      if (!(property in parentNavigator)) {
+        Reflect.deleteProperty(owner, property);
+        continue;
       }
+      const mirroredValue = () => {
+        const value = parentNavigator[property];
+        if (property !== "languages" || !Array.isArray(value)) return value;
+        if (languagesCache?.source !== value) {
+          languagesCache = { source: value, copy: child.Object.freeze(child.Array.from(value)) };
+        }
+        return languagesCache.copy;
+      };
+      Object.defineProperty(owner, property, {
+        configurable: true,
+        enumerable: descriptor?.enumerable ?? true,
+        get: descriptor?.get ? nativeLookingGetter(descriptor.get, mirroredValue)
+          : child.Object.getOwnPropertyDescriptor({ get [property]() { return mirroredValue(); } }, property)!.get
+      });
     }
-    // Direct iframe access can precede all-frame injection. Install these in
-    // the child's realm as well, using this document's live profile. Do not
-    // extend protection into excluded child documents.
-    const childUrl = currentChildPageUrl(childGlobal);
-    const relatedChild = childGlobal.location.href === "about:blank" || childGlobal.location.href === "about:srcdoc";
-    // A related-only install has no exclusion settings. Its navigated children
-    // must use their own bootstrap rather than risk patching a custom exclusion.
-    const canCheckExclusions = pendingBootstrap?.settings !== undefined || relatedChild;
-    if (canCheckExclusions && childUrl && !isExcludedUrl(childUrl, pendingBootstrap?.settings?.excludedDomains ?? DEFAULT_EXCLUDED_DOMAINS)) {
-      patchFunctionToString(childGlobal);
-      patchSpeechSynthesis(childGlobal);
-      patchKeyboard(childGlobal);
-      patchScreen(childGlobal);
-      patchMediaDevices(childGlobal);
-      if (installedSurfaceOwnership.webglInfo) patchWebGL(childGlobal);
-      patchWebGPU(childGlobal);
-    }
-    synchronizedChildNavigators.add(childNavigator);
+    if (state.uaSpoofingEnabled) patchSpeechSynthesis(child);
+    patchKeyboard(child);
+    patchScreen(child);
+    if (state.mediaDeviceListEnabled) patchMediaDevices(child);
+    if (state.webglInfoSpoofingEnabled) patchWebGL(child);
+    patchWebGPU(child);
   } catch {
-    // Cross-origin frame globals are intentionally inaccessible to the parent.
+    // Cross-origin realms are inaccessible and keep their own policy.
   }
-}
-
-function currentChildPageUrl(child: Window & typeof globalThis): string {
-  const url = child.location.href;
-  return url === "about:blank" || url === "about:srcdoc" ? initialPageUrl : isSupportedPageUrl(url) ? url : "";
 }
 
 function patchScreen(realm: Window & typeof globalThis): void {
@@ -904,7 +787,7 @@ function patchScreen(realm: Window & typeof globalThis): void {
 }
 
 function patchMediaDevices(realm: Window & typeof globalThis): void {
-  if (!parentIdentity && !state.mediaDeviceListEnabled) return;
+  if (!state.mediaDeviceListEnabled) return;
   const prototype = realm.MediaDevices?.prototype;
   const devicePrototype = realm.MediaDeviceInfo?.prototype;
   const inputPrototype = realm.InputDeviceInfo?.prototype;
@@ -971,8 +854,8 @@ function patchSpeechSynthesis(realm: Window & typeof globalThis): void {
   const fakeVoices = new WeakMap<object, ProfileVoice>();
   const assignedVoices = new WeakMap<object, SpeechSynthesisVoice>();
   let cache: { key: string; voices: SpeechSynthesisVoice[] } | null = null;
-  const active = (): boolean => state.enabled && (parentIdentity !== null || (state.uaSpoofingEnabled
-    && state.profile.uaMode !== "native" && realm.navigator.platform !== "MacIntel"));
+  const active = (): boolean => state.enabled && state.uaSpoofingEnabled
+    && (parentIdentity !== null || (state.profile.uaMode !== "native" && realm.navigator.platform !== "MacIntel"));
   for (const property of ["name", "lang", "voiceURI", "localService", "default"] as const) {
     const descriptor = realm.Object.getOwnPropertyDescriptor(voicePrototype, property);
     const nativeGetter = descriptor?.get;
@@ -1273,56 +1156,65 @@ function buildUserAgentData(): object | undefined {
 }
 
 function patchGeolocation(): void {
-  const watches = new Map<number, { nativeId?: number; timer?: number }>();
-  let watchId = 1;
-  const nativeGeolocationPrototype = window.Geolocation?.prototype;
-  const geolocationMethods = {
-    getCurrentPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
-      if (!state.enabled && nativeGeolocation) {
-        return nativeGeolocation.getCurrentPosition.call(nativeGeolocation, success, error, options);
-      }
-      queueMicrotask(() => success(buildPosition()));
-      return undefined;
-    },
-    watchPosition(success: PositionCallback, error?: PositionErrorCallback, options?: PositionOptions) {
-      const id = watchId;
-      watchId += 1;
-      if (!state.enabled && nativeGeolocation) {
-        const nativeId = nativeGeolocation.watchPosition.call(nativeGeolocation, success, error, options);
-        watches.set(id, { nativeId });
-        return id;
-      }
-      queueMicrotask(() => success(buildPosition()));
-      const timer = window.setInterval(() => success(buildPosition()), Math.max(options?.maximumAge ?? 30000, 1000));
-      watches.set(id, { timer });
-      return id;
-    },
-    clearWatch(id: number) {
-      const watch = watches.get(id);
-      if (!watch) {
-        return;
-      }
-      if (watch.nativeId !== undefined && nativeGeolocation) {
-        nativeGeolocation.clearWatch.call(nativeGeolocation, watch.nativeId);
-      }
-      if (watch.timer !== undefined) {
-        window.clearInterval(watch.timer);
-      }
-      watches.delete(id);
-    }
+  const globals = window as Window & {
+    GeolocationCoordinates?: { prototype: GeolocationCoordinates };
+    GeolocationPosition?: { prototype: GeolocationPosition };
   };
-  // Present a real Geolocation-shaped object: native prototype for the
-  // toString tag, own methods that print as native code.
-  const geolocation = Object.create(nativeGeolocationPrototype ?? Object.prototype) as Geolocation;
-  for (const name of ["getCurrentPosition", "watchPosition", "clearWatch"] as const) {
-    Object.defineProperty(geolocation, name, {
-      configurable: true,
-      writable: true,
-      value: maskAsNative(wrapNativeMethod(nativeGeolocationPrototype?.[name], geolocationMethods[name]), nativeGeolocationPrototype?.[name])
-    });
+  const coordsPrototype = globals.GeolocationCoordinates?.prototype;
+  const positionPrototype = globals.GeolocationPosition?.prototype;
+  const geolocationPrototype = window.Geolocation?.prototype;
+  if (!coordsPrototype || !positionPrototype || !geolocationPrototype) {
+    return;
   }
 
-  defineNavigatorGetter("geolocation", () => geolocation);
+  const coords = Object.getOwnPropertyDescriptor(positionPrototype, "coords")?.get;
+  if (!coords) return;
+  const coordinateKeys = ["latitude", "longitude", "accuracy", "altitude", "altitudeAccuracy", "heading", "speed"] as const;
+  const getters = coordinateKeys.map((key) => Object.getOwnPropertyDescriptor(coordsPrototype, key));
+  if (getters.some((descriptor) => !descriptor?.configurable || !descriptor.get)) {
+    return;
+  }
+  const coordinates = new WeakMap<GeolocationCoordinates, Record<typeof coordinateKeys[number], number | null>>();
+  // Keep the browser's branded objects; only their reported coordinate fields change.
+  for (const [index, key] of coordinateKeys.entries()) {
+    const descriptor = getters[index]!;
+    const native = descriptor.get!;
+    Object.defineProperty(coordsPrototype, key, {
+      ...descriptor,
+      get: maskAsNative(wrapNative(native, (target, receiver, args) => {
+        const replacement = coordinates.get(receiver);
+        return replacement ? replacement[key] : Reflect.apply(target, receiver, args);
+      }), native)
+    });
+  }
+  for (const prototype of [coordsPrototype, positionPrototype]) {
+    const native = prototype.toJSON;
+    if (typeof native !== "function") continue;
+    defineMethod(prototype, "toJSON", maskAsNative(wrapNative(native, (target, receiver, args) => {
+      const json = Reflect.apply(target, receiver, args);
+      const replacement = coordinates.get(prototype === coordsPrototype ? receiver : coords.call(receiver));
+      if (replacement) Object.assign(prototype === coordsPrototype ? json : json.coords, replacement);
+      return json;
+    }), native));
+  }
+  for (const name of ["getCurrentPosition", "watchPosition"] as const) {
+    const native = geolocationPrototype[name];
+    defineMethod(geolocationPrototype, name, maskAsNative(wrapNative(native, (target, receiver, args) => {
+      const success = args[0];
+      if (typeof success === "function") {
+        args[0] = function (this: unknown, position: GeolocationPosition) {
+          if (state.enabled) {
+            coordinates.set(coords.call(position), {
+              ...effectiveGeolocation(state.profile, state.seed),
+              altitude: null, altitudeAccuracy: null, heading: null, speed: null
+            });
+          }
+          return Reflect.apply(success, this, [position]);
+        };
+      }
+      return Reflect.apply(target, receiver, args);
+    }), native));
+  }
 }
 
 function patchFontFaceSet(): void {
@@ -1348,53 +1240,6 @@ function patchFontFaceSet(): void {
 
   defineMethod(prototype, "check", maskAsNative(wrapNative(nativeCheck, (_target, receiver, args) => Reflect.apply(patchedCheck, receiver, args)), nativeCheck));
   defineMethod(prototype, "load", maskAsNative(wrapNative(nativeLoad, (_target, receiver, args) => Reflect.apply(patchedLoad, receiver, args)), nativeLoad));
-  if (fontSet) {
-    defineMethod(fontSet, "check", patchedCheck);
-    defineMethod(fontSet, "load", patchedLoad);
-  }
-}
-
-function buildPosition(): GeolocationPosition {
-  const geolocationGlobal = window as unknown as {
-    GeolocationCoordinates?: { prototype: { toJSON?: Function } };
-    GeolocationPosition?: { prototype: { toJSON?: Function } };
-  };
-  const nativeCoordinatesToJSON = geolocationGlobal.GeolocationCoordinates?.prototype.toJSON;
-  const nativePositionToJSON = geolocationGlobal.GeolocationPosition?.prototype.toJSON;
-  const jitterLat = stableNumber(`${state.seed}:geo:lat`, -0.00015, 0.00015);
-  const jitterLon = stableNumber(`${state.seed}:geo:lon`, -0.00015, 0.00015);
-  return {
-    coords: {
-      latitude: Math.max(-90, Math.min(90, state.profile.latitude + jitterLat)),
-      longitude: Math.max(-180, Math.min(180, state.profile.longitude + jitterLon)),
-      accuracy: state.profile.accuracy,
-      altitude: null,
-      altitudeAccuracy: null,
-      heading: null,
-      speed: null,
-      toJSON: maskAsNative(wrapNativeMethod(nativeCoordinatesToJSON, {
-        toJSON(this: GeolocationCoordinates) {
-          // Match geolocation_coordinates.cc::toJSON's observable key order,
-          // which differs from the attribute order in Chromium's IDL.
-          return {
-            accuracy: this.accuracy,
-            latitude: this.latitude,
-            longitude: this.longitude,
-            altitude: this.altitude,
-            altitudeAccuracy: this.altitudeAccuracy,
-            heading: this.heading,
-            speed: this.speed
-          };
-        }
-      }.toJSON), nativeCoordinatesToJSON)
-    },
-    timestamp: NativeDate.now(),
-    toJSON: maskAsNative(wrapNativeMethod(nativePositionToJSON, {
-      toJSON(this: GeolocationPosition) {
-        return { timestamp: this.timestamp, coords: this.coords.toJSON() };
-      }
-    }.toJSON), nativePositionToJSON)
-  };
 }
 
 function patchCanvas(): void {
@@ -1609,16 +1454,52 @@ function patchWorkers(): void {
     Reflect.apply(nativeRevokeObjectURL, URL, [url]);
   };
 
-  // Preserve classic scripts' directive mode when prefixing the identity
-  // setup. Blob bytes cannot be read synchronously here, so capture only what
-  // is safely known from string parts at construction, after native validation.
+  // Observe exactly what the Blob constructor consumes, not array indices
+  // re-read after native iterable conversion.
+  const arrayIterator = Array.prototype[Symbol.iterator];
+  const arrayIteratorNext = arrayIterator.call([]).next;
   const blobModes = new WeakMap<Blob, boolean>();
   const WrappedBlob = maskAsNative(new Proxy(NativeBlob, {
     construct(target, argumentsList, newTarget) {
+      const parts = argumentsList[0];
+      let strings: string[] | undefined = parts === undefined ? [] : undefined;
+      if (Array.isArray(parts)) {
+        argumentsList[0] = {
+          get [Symbol.iterator]() {
+            const iterate = Reflect.get(parts, Symbol.iterator);
+            if (typeof iterate !== "function") return iterate;
+            return () => {
+              const iterator = Reflect.apply(iterate, parts, []);
+              if (iterate !== arrayIterator) return iterator;
+              return {
+                get next() {
+                  const method = iterator.next;
+                  if (method !== arrayIteratorNext) {
+                    return typeof method === "function" ? () => Reflect.apply(method, iterator, []) : method;
+                  }
+                  strings = [];
+                  return () => {
+                    const result = Reflect.apply(arrayIteratorNext, iterator, []) as IteratorResult<unknown>;
+                    if (!result.done && strings) {
+                      if (typeof result.value === "string") strings.push(result.value);
+                      else strings = undefined;
+                    }
+                    return result;
+                  };
+                },
+                get return() {
+                  const method = iterator.return;
+                  return typeof method === "function" ? () => Reflect.apply(method, iterator, []) : method;
+                }
+              };
+            };
+          }
+        };
+      }
       const blob = Reflect.construct(target, argumentsList, newTarget) as Blob;
-      const strict = strictModeForBlobParts(argumentsList[0]);
-      if (strict !== null) {
-        blobModes.set(blob, strict);
+      if (strings) {
+        const strict = strictModeForBlobParts(strings);
+        if (strict !== null) blobModes.set(blob, strict);
       }
       return blob;
     }
@@ -1693,7 +1574,7 @@ function patchWorkers(): void {
   const WrappedWorker = maskAsNative(new Proxy(NativeWorker, {
     construct(target, argumentsList, newTarget) {
       const [scriptURL, options] = argumentsList as [string | URL, WorkerOptions | undefined];
-      const wrappedURL = wrapBlobWorker(String(scriptURL));
+      const wrappedURL = typeof scriptURL === "string" ? wrapBlobWorker(scriptURL) : null;
       if (wrappedURL) {
         try {
           return Reflect.construct(target, [wrappedURL, options], newTarget);

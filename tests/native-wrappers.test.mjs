@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
 import vm from "node:vm";
-import { DEFAULT_SETTINGS, normalizeSettings } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
 
-const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
-const pageRelated = readFileSync(new URL("../dist/lite/page-related.js", import.meta.url), "utf8");
+const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
+const pageRelated = readFileSync(new URL("../dist/advanced/page-related.js", import.meta.url), "utf8");
 // Deliberately never install Ghost here: this is lies()'s fresh iframe realm.
 const foreignToString = vm.runInNewContext("Function.prototype.toString");
 const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": "tokyo-ja-jp" } });
@@ -39,16 +39,40 @@ const setup = `
   nativeMethod(NavigatorUAData.prototype, 'getHighEntropyValues', { async getHighEntropyValues(hints) { return {}; } }.getHighEntropyValues);
   nativeMethod(NavigatorUAData.prototype, 'toJSON', { toJSON() { return {}; } }.toJSON);
   var uaData = new NavigatorUAData();
-  var Geolocation = class Geolocation {};
-  for (const [name, fn] of Object.entries({ getCurrentPosition(success, error, options) {}, watchPosition(success, error, options) { return 1; }, clearWatch(id) {} })) nativeMethod(Geolocation.prototype, name, fn);
-  var GeolocationCoordinates = class GeolocationCoordinates {};
+  var Geolocation = class Geolocation {}, geo = new Geolocation(), geoCalls = [], watchCallback;
+  var geoMode = 'success', geoError = { code: 1 }, watchId = 47;
+  function readPosition(receiver, success, error, options) {
+    if (receiver !== geo || typeof success !== 'function') throw new TypeError('Illegal invocation');
+    geoCalls.push({ success, error, options });
+    if (geoMode === 'success') queueMicrotask(() => success(nativePosition));
+    else queueMicrotask(() => error(geoError));
+  }
+  nativeMethod(Geolocation.prototype, 'getCurrentPosition', { getCurrentPosition(success, error, options) {
+    readPosition(this, success, error, options);
+  } }.getCurrentPosition);
+  nativeMethod(Geolocation.prototype, 'watchPosition', { watchPosition(success, error, options) {
+    readPosition(this, success, error, options); watchCallback = success; return watchId;
+  } }.watchPosition);
+  nativeMethod(Geolocation.prototype, 'clearWatch', { clearWatch(id) {
+    if (this !== geo) throw new TypeError('Illegal invocation');
+    if (id === watchId) watchCallback = undefined;
+  } }.clearWatch);
+  var GeolocationCoordinates = class GeolocationCoordinates {}, nativeCoords = new GeolocationCoordinates();
+  var coordsData = { accuracy: 2, latitude: 1, longitude: 2, altitude: 3, altitudeAccuracy: 4, heading: 5, speed: 6 };
+  var coordsBrand = new WeakSet([nativeCoords]);
+  for (const key of Object.keys(coordsData)) nativeGetter(GeolocationCoordinates.prototype, key, coordsBrand, () => coordsData[key]);
   nativeMethod(GeolocationCoordinates.prototype, 'toJSON', { toJSON() {
-    return { accuracy: this.accuracy, latitude: this.latitude, longitude: this.longitude, altitude: this.altitude,
-      altitudeAccuracy: this.altitudeAccuracy, heading: this.heading, speed: this.speed };
+    if (!coordsBrand.has(this)) throw new TypeError('Illegal invocation');
+    return { ...coordsData };
   } }.toJSON);
-  var GeolocationPosition = class GeolocationPosition {};
-  nativeMethod(GeolocationPosition.prototype, 'toJSON', { toJSON() { return { timestamp: this.timestamp, coords: this.coords.toJSON() }; } }.toJSON);
-  var geo = new Geolocation();
+  var GeolocationPosition = class GeolocationPosition {}, nativePosition = new GeolocationPosition();
+  var positionBrand = new WeakSet([nativePosition]);
+  nativeGetter(GeolocationPosition.prototype, 'coords', positionBrand, () => nativeCoords);
+  nativeGetter(GeolocationPosition.prototype, 'timestamp', positionBrand, () => 123);
+  nativeMethod(GeolocationPosition.prototype, 'toJSON', { toJSON() {
+    if (!positionBrand.has(this)) throw new TypeError('Illegal invocation');
+    return { timestamp: 123, coords: { ...coordsData } };
+  } }.toJSON);
   for (const [key, value] of Object.entries({
     language: 'en-US', languages: ['en-US'], deviceMemory: 8,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/152.0.0.0 Safari/537.36',
@@ -68,7 +92,7 @@ const setup = `
   } }.measureText);
   var FontFaceSet = class FontFaceSet { [Symbol.iterator]() { return [][Symbol.iterator](); } };
   nativeMethod(FontFaceSet.prototype, 'check', { check(font, text) { return true; } }.check);
-  nativeMethod(FontFaceSet.prototype, 'load', { load(font, text) { return Promise.resolve([]); } }.load);
+  nativeMethod(FontFaceSet.prototype, 'load', { load(font, text) { return Promise.resolve(['native face']); } }.load);
   document.fonts = new FontFaceSet();
   var WebGLRenderingContext = class WebGLRenderingContext {};
   nativeMethod(WebGLRenderingContext.prototype, 'getParameter', { getParameter(parameter) { return 'native'; } }.getParameter);
@@ -84,8 +108,8 @@ const setup = `
   nativeMethod(history, 'pushState', { pushState(data, unused, url) {} }.pushState);
   nativeMethod(history, 'replaceState', { replaceState(data, unused, url) {} }.replaceState);
   var blobByUrl = new Map(), lastWorkerUrl, nextUrl = 0;
-  var Blob = class Blob { constructor(parts = [], options = {}) { this.parts = parts; this.type = options.type || ''; } };
-  var Worker = class Worker { constructor(url) { lastWorkerUrl = url; } };
+  var Blob = class Blob { constructor(parts = [], options = {}) { this.parts = [...parts]; this.type = options.type || ''; } };
+  var Worker = class Worker { constructor(url) { lastWorkerUrl = String(url); } };
   var URL = class URL extends HostURL {};
   nativeMethod(URL, 'createObjectURL', { createObjectURL(blob) { const url = 'blob:' + ++nextUrl; blobByUrl.set(url, blob); return url; } }.createObjectURL);
   nativeMethod(URL, 'revokeObjectURL', { revokeObjectURL(url) { blobByUrl.delete(url); } }.revokeObjectURL);
@@ -112,6 +136,7 @@ const setup = `
     snapshot(Intl[name], 'Intl.' + name);
   }
   snapshot(Intl, 'Intl');
+  var nativeToLocaleString = Date.prototype.toLocaleString;
   var NativeDate = Date, nativeDateNow = Date.now, nativeDateUTC = Date.UTC, nativeDateParse = Date.parse;
   var navigatorKeys = Reflect.ownKeys(navigator), screenKeys = Reflect.ownKeys(screen);
 `;
@@ -122,9 +147,9 @@ function realm() {
   run(setup);
   return { context, run };
 }
-function page() {
+function page(overrides = {}) {
   const h = realm();
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite", sessionSalt: "native-wrappers" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, ...overrides }), sessionSalt: "native-wrappers" };
   h.run(pageMain);
   return h;
 }
@@ -230,10 +255,12 @@ test("Date and Intl constructor proxies preserve native construction, subclassin
   checkConstructors(page());
 });
 
-test("child realms keep native targets and branded getters during parent synchronization", () => {
+test("parent access does not rewrite an already installed child realm", () => {
   const parent = page(), child = page();
+  const installed = child.run("Function.prototype.toString");
   parent.context.child = child.run("globalThis");
   parent.run("new HTMLIFrameElement(child).contentWindow");
+  assert.equal(child.run("Function.prototype.toString"), installed);
   detect(child, 60);
   checkConstructors(child);
   assert.equal(parent.run("screen.width === child.screen.width && navigator.language === child.navigator.language"), true);
@@ -274,7 +301,7 @@ test("actual Blob worker prelude replacements pass the fresh-realm detector and 
 test("absent native navigator accessors remain named, nonconstructible synthetic getters", () => {
   const h = realm();
   h.run("delete Navigator.prototype.deviceMemory");
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
   h.run(pageMain);
   for (const name of ["deviceMemory"]) {
     const getter = h.run(`Object.getOwnPropertyDescriptor(Navigator.prototype, '${name}').get`);
@@ -288,7 +315,7 @@ test("absent native navigator accessors remain named, nonconstructible synthetic
 test("locked navigator prototype fields are never shadowed on the instance", () => {
   const h = realm();
   h.run("Object.defineProperty(Navigator.prototype, 'language', {configurable: false})");
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, build: "lite" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
   h.run(pageMain);
   assert.equal(h.run("navigator.language"), "en-US");
   assert.equal(h.run("Object.hasOwn(navigator, 'language')"), false);
@@ -300,12 +327,21 @@ test("locked navigator prototype fields are never shadowed on the instance", () 
 });
 
 
-test("returned geolocation toJSON proxies serialize fresh plain objects in Chromium's observable order", async () => {
+test("native geolocation success keeps branded objects and serializes the effective coordinates", async () => {
   const h = page();
   const position = await new Promise(resolve => {
     h.context.receivePosition = resolve;
     h.run("navigator.geolocation.getCurrentPosition(receivePosition)");
   });
+  assert.equal(position, h.run("nativePosition"));
+  assert.equal(position.coords, h.run("nativeCoords"));
+  assert.ok(position instanceof h.run("GeolocationPosition"));
+  assert.ok(position.coords instanceof h.run("GeolocationCoordinates"));
+  assert.deepEqual(Reflect.ownKeys(position), []);
+  assert.deepEqual(Reflect.ownKeys(position.coords), []);
+  assert.equal(position.timestamp, 123);
+  const { profile, seed } = resolveProfile("https://example.com/path", settings, Date.now(), undefined, "native-wrappers");
+  for (const [key, value] of Object.entries(effectiveGeolocation(profile, seed))) assert.equal(position.coords[key], value);
   const json = position.toJSON();
   assert.notEqual(json, position);
   assert.notEqual(json.coords, position.coords);
@@ -325,4 +361,202 @@ test("returned geolocation toJSON proxies serialize fresh plain objects in Chrom
     assert.equal(method.toString(), native.toString());
     assert.notEqual(object.toJSON(), object.toJSON());
   }
+});
+
+test("geolocation forwards native permission errors, options, and watch lifecycle", async () => {
+  const h = page();
+  h.run("geoMode = 'denied'; var options = { maximumAge: 25, timeout: 50 }; var successes = 0");
+  const denied = await new Promise(resolve => {
+    h.context.denied = resolve;
+    h.run("navigator.geolocation.getCurrentPosition(() => ++successes, denied, options)");
+  });
+  assert.equal(denied, h.run("geoError"));
+  assert.equal(h.run("geoCalls[0].error === denied && geoCalls[0].options === options && successes === 0"), true);
+  h.run("geoError = { code: 3 }");
+  const timeout = await new Promise(resolve => {
+    h.context.timedOut = resolve;
+    h.run("navigator.geolocation.getCurrentPosition(() => ++successes, timedOut, options)");
+  });
+  assert.equal(timeout, h.run("geoError"));
+  assert.equal(h.run("successes"), 0);
+  assert.throws(() => h.run("navigator.geolocation.getCurrentPosition(null)"), { name: "TypeError" });
+  assert.throws(() => h.run("Geolocation.prototype.watchPosition.call({}, () => {})"), { name: "TypeError" });
+  const watched = await new Promise(resolve => {
+    h.context.watched = resolve;
+    h.run("geoMode = 'success'; var id = navigator.geolocation.watchPosition(watched, denied, options)");
+  });
+  assert.equal(watched, h.run("nativePosition"));
+  assert.equal(h.run("id === watchId && typeof watchCallback === 'function'"), true);
+  assert.equal(h.run("navigator.geolocation.clearWatch(id); watchCallback"), undefined);
+});
+
+test("protected documents add no visible installer keys and installing twice leaves wrappers alone", () => {
+  const h = realm();
+  const keys = h.run("Reflect.ownKeys(globalThis)");
+  const toStringKeys = h.run("Reflect.ownKeys(Function.prototype.toString)");
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
+  h.run(pageMain);
+  const mask = h.run("Function.prototype.toString");
+  assert.deepEqual(h.run("Reflect.ownKeys(globalThis)"), keys);
+  assert.deepEqual(h.run("Reflect.ownKeys(Function.prototype.toString)"), toStringKeys);
+  h.run(pageMain);
+  assert.equal(h.run("Function.prototype.toString"), mask);
+});
+
+test("excluded documents are untouched even when their protected parent accesses them", () => {
+  const exclusions = { excludedDomains: ["example.com/private"] };
+  const p = page(exclusions), child = realm();
+  const keys = child.run("Reflect.ownKeys(globalThis)");
+  child.run("location.href = 'https://example.com/private/frame'");
+  child.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, ...exclusions }) };
+  child.run(pageMain);
+  p.context.child = child.run("globalThis");
+  p.run("new HTMLIFrameElement(child).contentWindow; new HTMLIFrameElement(child).contentDocument");
+  assert.deepEqual(child.run("Reflect.ownKeys(globalThis)"), keys);
+  assert.equal(child.run("originals.every(o => Object.getOwnPropertyDescriptor(o.owner, o.key)?.[o.slot] === o.fn)"), true);
+  assert.equal(child.run("navigator.language"), "en-US");
+});
+
+test("related bundle keeps native surfaces without a protected parent policy", () => {
+  for (const p of [realm(), page({ enabled: false })]) {
+    const child = realm();
+    child.context.parentRealm = p.run("globalThis");
+    child.run("parent = parentRealm; top = parentRealm; location.href = 'about:blank'; document.referrer = parentRealm.location.href");
+    child.run(pageRelated);
+    assert.equal(child.run("originals.every(o => Object.getOwnPropertyDescriptor(o.owner, o.key)?.[o.slot] === o.fn)"), true);
+  }
+});
+
+test("related bundle inherits its parent's effective policy without adding Ghost noise to delegated measureText", () => {
+  const p = page({ disableCanvasMeasureTextSpoofing: true, disableUserAgentSpoofing: true, disableWebglInfoSpoofing: true });
+  const child = realm();
+  child.context.parentRealm = p.run("globalThis");
+  child.run("parent = parentRealm; top = parentRealm; location.href = 'about:srcdoc'; document.referrer = parentRealm.location.href");
+  child.run(pageRelated);
+  assert.equal(child.run("navigator.language"), "ja-JP");
+  assert.equal(child.run("new CanvasRenderingContext2D().measureText('word').width"), 100);
+  assert.equal(child.run("new WebGLRenderingContext().getParameter(0x9245)"), "native");
+  assert.equal(child.run("navigator.platform"), "Win32");
+});
+
+test("synchronous blank iframe and popup access uses only the protected parent's policy, without reinstalling", () => {
+  const p = realm();
+  const child = realm(), popup = realm();
+  child.context.parent = popup.context.opener = p.run("globalThis");
+  child.run("location.href = 'about:blank'; document.referrer = parent.location.href");
+  popup.run("location.href = 'about:blank'; document.referrer = opener.location.href");
+  p.context.child = child.run("globalThis");
+  p.context.popup = popup.run("globalThis");
+  p.run("var open = new Proxy({ open() { return popup; } }.open, {})");
+  p.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, disableUserAgentSpoofing: true }) };
+  p.run(pageMain);
+  assert.equal(p.run("new HTMLIFrameElement(child).contentWindow.navigator.language"), "ja-JP");
+  assert.equal(p.run("open('about:blank').navigator.language"), "ja-JP");
+  assert.equal(child.run("navigator.platform"), "Win32");
+  const before = child.run("Function.prototype.toString");
+  child.run(pageRelated);
+  assert.equal(child.run("Function.prototype.toString"), before);
+});
+
+test("document.fonts inherits native-masked wrappers without own methods", async () => {
+  const h = page();
+  for (const name of ["check", "load"]) {
+    const method = h.run(`document.fonts.${name}`);
+    assert.equal(method, h.run(`FontFaceSet.prototype.${name}`));
+    assert.equal(h.run(`Object.hasOwn(document.fonts, '${name}')`), false);
+    assert.match(method.toString(), /\[native code\]/);
+  }
+  assert.equal(h.run('document.fonts.check("16px Microsoft YaHei")'), false);
+  assert.equal(h.run('document.fonts.check("16px sans-serif")'), true);
+  assert.deepEqual(Array.from(await h.run('document.fonts.load("16px Microsoft YaHei")')), []);
+  assert.deepEqual(Array.from(await h.run('document.fonts.load("16px sans-serif")')), ["native face"]);
+});
+
+test("Intl and Date locale methods read options in native order with their original receiver", () => {
+  const h = page();
+  assert.equal(h.run(`(() => {
+    const seen = [];
+    const options = Object.create({ get timeZone() { seen.push('timeZone'); if (this !== options) throw Error('receiver'); return 'UTC'; } }, {
+      hour: { value: 'numeric' },
+      hourCycle: { get() { seen.push('hourCycle'); return 'h23'; } },
+      irrelevant: { enumerable: true, get() { throw Error('unexpected getter'); } }
+    });
+    const native = new nativeIntl.DateTimeFormat('ja-JP', options).resolvedOptions();
+    const nativeOrder = seen.splice(0).join(',');
+    const wrapped = new Intl.DateTimeFormat(undefined, options).resolvedOptions();
+    if (JSON.stringify(native) !== JSON.stringify(wrapped) || nativeOrder !== seen.splice(0).join(',')) return false;
+    const date = new Date(0);
+    if (nativeToLocaleString.call(date, 'ja-JP', options) !== date.toLocaleString(undefined, options)) return false;
+    return new Intl.NumberFormat(undefined, Object.create({ minimumFractionDigits: 3 })).resolvedOptions().minimumFractionDigits === 3 &&
+      new Intl.DateTimeFormat(undefined, Object.freeze({ timeZone: undefined })).resolvedOptions().timeZone === 'Asia/Tokyo';
+  })()`), true);
+  for (const expression of [
+    "new Intl.DateTimeFormat(undefined, null)", "new Intl.DateTimeFormat(null)",
+    "new Intl.Segmenter(undefined, 1)", "new Date(0).toLocaleDateString(undefined, null)",
+    "new Date(0).toLocaleString(null)"
+  ]) assert.throws(() => h.run(expression), { name: "TypeError" });
+  for (const expression of ["new Intl.DateTimeFormat(undefined, {timeZone: null})", "new Date(0).toLocaleTimeString(undefined, {timeZone: null})"]) {
+    assert.throws(() => h.run(expression), { name: "RangeError" });
+  }
+});
+
+test("Ghost retains the injected locale where native negotiation drops the profile's region", () => {
+  const h = page();
+  assert.equal(h.run("new nativeIntl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
+  assert.equal(h.run("new Intl.PluralRules().resolvedOptions().locale"), "ja-JP");
+  assert.equal(h.run("new Intl.PluralRules('ja-JP').resolvedOptions().locale"), "ja");
+});
+
+test("Blob workers classify the parts Blob consumed and stay native for custom iterators or URL objects", () => {
+  const h = page();
+  assert.equal(h.run(`(() => {
+    const parts = ['self.strict = false;'];
+    let iteratorCalls = 0;
+    parts[Symbol.iterator] = function* () {
+      if (this !== parts) throw Error('wrong iterable receiver');
+      ++iteratorCalls;
+      yield '"use strict"; self.strict = true;';
+    };
+    const custom = new Blob(parts);
+    const url = URL.createObjectURL(custom);
+    new Worker(url);
+    if (lastWorkerUrl !== url || custom.parts[0] !== '"use strict"; self.strict = true;' || iteratorCalls !== 1) return false;
+    const binary = URL.createObjectURL(new Blob([new Uint8Array([1, 2])]));
+    new Worker(binary);
+    if (lastWorkerUrl !== binary) return false;
+    const proxy = new Proxy(['self.strict = false;'], {
+      get(target, key, receiver) {
+        return key === '0' ? '"use strict"; self.strict = true;' : Reflect.get(target, key, receiver);
+      }
+    });
+    const tracked = URL.createObjectURL(new Blob(proxy));
+    new Worker(tracked);
+    if (lastWorkerUrl === tracked || !blobByUrl.get(lastWorkerUrl).parts[0].startsWith('"use strict";')) return false;
+    let conversions = 0;
+    new Worker({ toString() { ++conversions; return tracked; } });
+    return lastWorkerUrl === tracked && conversions === 1;
+  })()`), true);
+});
+
+test("shipped WebGL wrappers change debug identity enums but not the plain enums", () => {
+  const h = page();
+  const { profile } = resolveProfile("https://example.com/path", settings);
+  for (const name of ["WebGLRenderingContext", "WebGL2RenderingContext"]) {
+    assert.equal(h.run(`new ${name}().getParameter(0x1f00)`), "native");
+    assert.equal(h.run(`new ${name}().getParameter(0x1f01)`), "native");
+    assert.equal(h.run(`new ${name}().getParameter(0x9245)`), profile.webglVendor);
+    assert.equal(h.run(`new ${name}().getParameter(0x9246)`), profile.webglRenderer);
+  }
+});
+
+test("the isolated bridge adds no site marker to the DOM", () => {
+  const bridge = readFileSync(new URL("../dist/advanced/content-bridge.js", import.meta.url), "utf8");
+  const h = realm();
+  h.run(`
+    var setAttributes = [];
+    document.documentElement = { setAttribute(...args) { setAttributes.push(args); } };
+    var chrome = { runtime: { onMessage: { addListener() {} } } };
+  `);
+  h.run(bridge);
+  assert.equal(h.run("setAttributes.length"), 0);
 });

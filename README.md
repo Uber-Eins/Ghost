@@ -2,23 +2,19 @@
 
 Ghost is a Chromium/Helium extension that gives each site a stable privacy profile. A site sees a consistent locale, language list, timezone, geolocation, platform, WebGL, and text-metric surface without telemetry. Global Privacy Control is left to Helium's own setting, which implements it in the engine for documents and workers. Ghost does not use a remote service unless the optional automatic network-location feature is enabled.
 
-## Builds
+## Build
 
-- `lite`: no `debugger` permission. Uses early page-world JavaScript patches plus persistent and tab-scoped Declarative Net Request rules for headers.
-- `advanced`: includes the `debugger` permission and attempts Chrome DevTools Protocol environment overrides. If attach fails, it falls back to the lite behavior.
-
-Chromium does not allow the `debugger` permission to be optional, so the two builds are separate.
+Ghost has one build, with the `debugger` permission and a runtime **Advanced overrides** switch (on by default). Turn it off to use only early page-world JavaScript patches and Declarative Net Request header rules. Ghost also falls back to those layers if Chrome DevTools Protocol (CDP) attach fails. Chromium does not allow the `debugger` permission to be optional.
 
 ## Commands
 
 ```bash
 npm install
-npm run build:lite
-npm run build:advanced
+npm run build
 npm run verify
 ```
 
-Load `dist/lite` or `dist/advanced` as an unpacked extension in Chromium/Helium.
+Load `dist/advanced` as an unpacked extension in Chromium/Helium.
 
 ## Saving and startup
 
@@ -26,7 +22,7 @@ A successful save means settings have been stored and extension-global protectio
 
 Tab updates retain ordering and skip obsolete queued revisions. Page profile replies do not wait for CDP and do not claim that a pending Advanced override has completed. Existing tabs can finish applying after the save acknowledgement; a permanently unresponsive target can still delay its own CDP work, but not the control panel or other settings commits.
 
-Each new service-worker instance reconciles persisted global configuration, including ordinary wake-ups without an `onStartup` event. The popup/options initial load waits only for this global transaction, not all tabs. This prevents a fresh UI context from racing the worker's initial user-script registration. Saving no longer re-registers a second, potentially outdated bootstrap payload from the options UI.
+Each new service-worker instance reconciles persisted global configuration, including ordinary wake-ups without an `onStartup` event. The popup/options initial load waits only for this global transaction, not all tabs. Only the service worker writes the bootstrap. Reopening the popup or options page asks it to check current User Scripts authorization; a rejected registration or update fails the settings transaction rather than removing the existing script.
 
 ## Helium compatibility
 
@@ -34,13 +30,13 @@ Ghost leaves AudioContext fingerprint protection and `navigator.hardwareConcurre
 
 - Enable **Use Helium measureText noise** only with `helium://flags/#fingerprinting-canvas-measuretext-noise`; otherwise Ghost owns `CanvasRenderingContext2D.measureText` protection.
 - Enable **Use Helium WebGL info spoofing** only with `helium://flags/#spoof-webgl-info`; Ghost and Helium must not both spoof the WebGL vendor/renderer. WebGPU adapter info stays with Ghost and follows whichever WebGL pair the document reports, including Helium's presets.
-- Enable **Use Helium UA reduction** with Helium's `reduced-system-info` or `remove-client-hints` flag; Ghost then leaves User-Agent, UA Client Hints, and platform surfaces unchanged. The Advanced build never stacks a separate CDP User-Agent override on either owner.
+- Enable **Use Helium UA reduction** with Helium's `reduced-system-info` or `remove-client-hints` flag; Ghost then leaves User-Agent, UA Client Hints, and platform surfaces unchanged. Ghost never stacks a separate CDP User-Agent override on either owner.
 
-Ghost's own text-metric noise (when not delegated to Helium) and geolocation jitter rotate per browser session, while the per-site profile identity stays stable. The session salt survives service-worker restarts and is not saved with settings. Restored tabs can briefly start with the previous session's registered bootstrap; those documents keep their original noise until navigation rather than changing it mid-document or reloading. A pre-existing related-frame limitation remains: parent-mirroring same-origin `about:blank`/`srcdoc` frames and popups use an unsalted seed, so their noise differs from the top document's and a fresh same-origin iframe can still expose non-rotating Ghost `measureText` noise.
+Ghost's own text-metric noise (when not delegated to Helium) and geolocation jitter rotate per browser session, while the per-site profile identity stays stable. The session salt survives service-worker restarts and is not saved with settings. Restored tabs can briefly start with the previous session's registered bootstrap; those documents keep their original text noise and page-reported geolocation jitter until navigation rather than changing it mid-document or reloading. A related document with early script injection inherits its same-origin parent or opener’s resolved policy, including surface delegation and session noise. Unrelated, inaccessible, or unprotected parents do not confer protection. Chromium does not always inject into initial empty documents: synchronous iframe and popup access from a protected parent covers navigator identity, screen, keyboard, speech voices, media devices, WebGL and WebGPU, subject to the same ownership rules. Other surfaces in those initial realms remain native unless a document-start installer runs; normally navigated documents install their own policy.
 
 ## Automatic network location
 
-The opt-in **Match location to public IP** setting queries `https://my.ippure.com/v1/info` at startup and periodically while enabled. Ghost validates and caches only the returned timezone, country/region/city, and coordinates; it does not store the returned IP address. Network lookup and open-tab reapplication run outside the settings-page loading path. Use the refresh button beside **Detected location** to request an immediate update. The cached location overrides the selected profile's timezone and uses city-level geolocation accuracy while keeping its device identity and fingerprint seed stable.
+The opt-in **Match location to public IP** setting queries `https://my.ippure.com/v1/info` at startup and periodically while enabled. Ghost validates and caches only the returned timezone, country/region/city, and coordinates; it does not store the returned IP address. The network lookup stays outside the settings queue. Its result is saved and applied as a settings transaction, and open-tab reapplication runs separately. Use the refresh button beside **Detected location** to request an immediate update. The cached location overrides the selected profile's timezone and uses city-level geolocation accuracy while keeping its device identity and fingerprint seed stable.
 
 Language behavior is independent: **Keep profile language** preserves the selected profile's locale and request language, while **Auto** derives `navigator.language`, `navigator.languages`, Intl locale, and `Accept-Language` from the detected VPN region. IP geolocation databases can disagree, so this improves consistency but cannot guarantee an exact match on every site.
 
@@ -56,6 +52,8 @@ Ghost targets common JavaScript and request-header fingerprinting. It does not c
 
 With **Fixed media device list** enabled (the default), `enumerateDevices()` reports a fixed anonymous list without media permission: audio input, video input, audio output. Turn it off in Global Configuration to leave media-device APIs native. Native entries are reused where present; once any device label or device id is exposed, the native list is left unchanged for calling sites. This does not create hardware or change permissions: a site that then requests a camera on a machine without one gets the browser's normal not-found error.
 
+JavaScript profiles in cross-origin iframes are partitioned by the top-level site. Persistent header rules cannot match by the top-level site of an arbitrary request: iframe navigations match the destination and subresources match the initiator. If `a.example` embeds `b.example` and the sites have different rules, the iframe can report A’s profile in JavaScript but use B’s `Accept-Language` and, where Ghost owns them, B’s User-Agent and client-hint headers. The tab-scoped rules for file and IPv6 pages do not solve this for ordinary web domains.
+
 ### Screen
 
 Windows profiles automatically choose a common physical panel resolution by profile id, filtering for at least 1280×720 CSS pixels at the document's device pixel ratio. If scaling excludes every panel, the largest panel is used. The profile editor's **Display and input** group can instead select a fixed panel or custom physical width/height. Physical dimensions are divided by the device pixel ratio captured once when the patch installs and rounded to CSS pixels, with a Windows 10/11 taskbar deduction (40/48 CSS pixels; unconfirmed defaults). Non-Windows, native-UA and Helium-delegated UA profiles keep native dimensions. **Report a single screen** is enabled by default (`isExtended: false`); turning it off keeps that property native without disabling profile dimensions. Same-origin related frames mirror the parent's screen. Dimensions are held for the document's lifetime, unless its profile changes; automatic mode bumps to a fitting candidate at the next document load and rounds up to 80-CSS-pixel steps if no panel fits. Fixed mode never bumps, so a window larger than the configured screen is a contradiction. Device pixel ratio stays native, as do screen orientation, color depth and window geometry. JavaScript `matchMedia` device-size checks follow the profile for pixel lengths and numeric aspect ratios, including min/max and range comparisons; unsupported units remain native. Stylesheet CSS `@media` and `getComputedStyle` are not patched and can disagree. An already-granted `window-management` permission can expose the real screens through `getScreenDetails()`; Ghost does not fake permission-gated `ScreenDetails`.
@@ -68,11 +66,11 @@ Local speech voices automatically follow the reported Windows platform and the p
 
 Ghost composes tracked Blob Worker source and its identity setup into one entry script. That setup mirrors the page's `navigator` surface (language, languages, device memory and, unless delegated to Helium, platform, User-Agent and `userAgentData`) onto `WorkerNavigator`, together with the same `Date`/`Intl` timezone and default-locale rewriting the page uses, and WebGPU adapter identity derived from the page's reported WebGL pair (plus WebGL identity when Ghost owns it). It does not add an `importScripts()` or dynamic `import()` loader: a site's CSP may allow Blob Worker entry scripts but forbid importing Blob scripts inside them. The site's CSP is not modified.
 
-The Blob observer preserves the native constructor and bytes and records strict/sloppy directive mode only when it can be determined safely from plain string parts. Workers with untracked or indeterminate source (for example binary parts, iterators, hashbangs, or ambiguous directive prologues) remain native, including their `navigator`, timezone and GPU surface. This is a Worker-only compatibility fallback, not a site exclusion; page protection remains enabled. Workers loaded from a URL cannot be rewritten by the page without changing their `self.location`, relative imports and CSP behavior, so they remain native, as do shared workers and service workers. The Advanced build does not attach its debugger to workers to cover them: doing so makes Cloudflare Turnstile reject the browser.
+The Blob observer preserves the native constructor and bytes and records strict/sloppy directive mode only from string parts actually consumed through the native array iterator. Workers with untracked or indeterminate source (for example binary parts, iterators, hashbangs, or ambiguous directive prologues) remain native, including their `navigator`, timezone and GPU surface. This is a Worker-only compatibility fallback, not a site exclusion; page protection remains enabled. Workers loaded from a URL cannot be rewritten by the page without changing their `self.location`, relative imports and CSP behavior, so they remain native, as do shared workers and service workers. Ghost does not attach its debugger to workers to cover them: doing so makes Cloudflare Turnstile reject the browser.
 
-To check this failure locally after a Lite build, serve the project over HTTP on loopback and open `tests/worker-csp-smoke.html` in a browser without Ghost installed. It loads the page bundle directly and checks restrictive CSP, classic/module Worker startup and message round-trips, strict/sloppy semantics, Blob construction, page/Worker `navigator` and timezone agreement, and retained page/Worker protection. It is a reproduction of the loading failure, not a guarantee that any production challenge passes.
+To check this failure locally after `npm run build`, serve the project over HTTP on loopback and open `tests/worker-csp-smoke.html` in a browser without Ghost installed. It loads the page bundle directly and checks restrictive CSP, classic/module Worker startup and message round-trips, strict/sloppy semantics, Blob construction, page/Worker `navigator` and timezone agreement, and retained page/Worker protection. It is a reproduction of the loading failure, not a guarantee that any production challenge passes.
 
 
 ### Options preview
 
-For UI screenshots without installing the extension, run `npm run build:test` and serve this worktree with `python3 -m http.server 8000 --bind 127.0.0.1`. Open `http://127.0.0.1:8000/tests/options-preview.html`; add `?edit=1` to open the custom Windows profile directly, or `?edit=1&lang=zh_CN` for Simplified Chinese. The harness loads the built `dist/lite/options.html` assets and the test API's real defaults, stubs extension APIs, and keeps all edits in memory. It is a visual development tool, not an extension integration test.
+For UI screenshots without installing the extension, run `npm run build:test` and serve this worktree with `python3 -m http.server 8000 --bind 127.0.0.1`. Open `http://127.0.0.1:8000/tests/options-preview.html`; add `?edit=1` to open the custom Windows profile directly, or `?edit=1&lang=zh_CN` for Simplified Chinese. The harness loads the built `dist/advanced/options.html` assets and the test API's real defaults, stubs extension APIs, and keeps all edits in memory. It is a visual development tool, not an extension integration test.

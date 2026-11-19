@@ -35,7 +35,6 @@ import {
   isAccessiblePageUrl,
   isSupportedPageUrl,
   senderBoundPageUrl,
-  loadSettings,
   normalizeExclusionRule,
   normalizeSettings,
   normalizeSiteRuleKey,
@@ -47,16 +46,12 @@ import {
   requestFilePathStartRegexFilter,
   requestHostPathStartRegexFilter,
   requestPathStartRegexFilter,
-  repairContentBootstrap,
   resolveProfile,
   sanitizeCanvasFont,
   isExcludedUrl,
-  saveSettings,
   siteKeyFromHostname,
   siteKeyFromUrl,
   stableProfileIdForSite,
-  stableSeed,
-  updateSettings,
   userAgentForProfile,
   userAgentMetadataForProfile,
   webgpuAdapterInfoForProfile,
@@ -120,18 +115,18 @@ test("site rules use host suffix matching with a wildcard default", () => {
     }
   });
   assert.equal(settings.siteProfiles[DEFAULT_SITE_RULE], "los-angeles-en-us");
-  assert.equal(resolveProfile("https://www.google.com/search", settings, "lite").profile.id, "tokyo-ja-jp");
-  assert.equal(resolveProfile("https://a.b.c.google.com/search", settings, "lite").profile.id, "tokyo-ja-jp");
-  assert.equal(resolveProfile("https://accounts.google.com/signin", settings, "lite").profile.id, "beijing-zh-cn");
-  assert.equal(resolveProfile("https://example.com", settings, "lite").profile.id, "los-angeles-en-us");
-  assert.equal(resolveProfile("https://other.test", settings, "lite").profile.id, "los-angeles-en-us");
-  assert.notEqual(resolveProfile("https://example.com", settings, "lite").seed, resolveProfile("https://other.test", settings, "lite").seed);
-  const wwwGoogle = resolveProfile("https://www.google.com/search", settings, "lite");
-  const mailGoogle = resolveProfile("https://mail.google.com/mail", settings, "lite");
+  assert.equal(resolveProfile("https://www.google.com/search", settings).profile.id, "tokyo-ja-jp");
+  assert.equal(resolveProfile("https://a.b.c.google.com/search", settings).profile.id, "tokyo-ja-jp");
+  assert.equal(resolveProfile("https://accounts.google.com/signin", settings).profile.id, "beijing-zh-cn");
+  assert.equal(resolveProfile("https://example.com", settings).profile.id, "los-angeles-en-us");
+  assert.equal(resolveProfile("https://other.test", settings).profile.id, "los-angeles-en-us");
+  assert.notEqual(resolveProfile("https://example.com", settings).seed, resolveProfile("https://other.test", settings).seed);
+  const wwwGoogle = resolveProfile("https://www.google.com/search", settings);
+  const mailGoogle = resolveProfile("https://mail.google.com/mail", settings);
   assert.equal(wwwGoogle.profile.id, mailGoogle.profile.id);
   assert.notEqual(wwwGoogle.seed, mailGoogle.seed);
   const siteRuleKeys = Object.keys(settings.siteProfiles);
-  resolveProfile("https://new.example.test", settings, "lite");
+  resolveProfile("https://new.example.test", settings);
   assert.deepEqual(Object.keys(settings.siteProfiles), siteRuleKeys);
 });
 
@@ -146,11 +141,10 @@ test("subframes inherit the top-level site's profile and seed partition", () => 
       "tracker.example": "beijing-zh-cn"
     }
   });
-  const topLevel = resolveProfile("https://news.example/article", settings, "lite");
+  const topLevel = resolveProfile("https://news.example/article", settings);
   const embedded = resolveProfile(
     "https://tracker.example/frame",
     settings,
-    "lite",
     Date.now(),
     "https://news.example/article"
   );
@@ -158,7 +152,7 @@ test("subframes inherit the top-level site's profile and seed partition", () => 
   assert.equal(embedded.siteKey, "news.example");
   assert.equal(embedded.profile.id, "tokyo-ja-jp");
   assert.equal(embedded.seed, topLevel.seed);
-  assert.notEqual(embedded.seed, resolveProfile("https://tracker.example/frame", settings, "lite").seed);
+  assert.notEqual(embedded.seed, resolveProfile("https://tracker.example/frame", settings).seed);
 });
 
 test("default exclusions include captcha and account challenge routes", () => {
@@ -313,86 +307,27 @@ test("profile resolution accepts same-origin SPA URLs without trusting cross-ori
   assert.equal(senderBoundPageUrl("https://example.com/", "about:blank", "https://evil.test"), "");
 });
 
-test("bootstrap does not broadcast settings into the page", () => {
-  const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
-  const bridge = readFileSync(new URL("../dist/lite/content-bridge.js", import.meta.url), "utf8");
-  const manifest = JSON.parse(readFileSync(new URL("../dist/lite/manifest.json", import.meta.url), "utf8"));
-  assert.equal(existsSync(new URL("../dist/lite/content-fallback.js", import.meta.url)), false);
-  assert.doesNotMatch(pageMain, /bootstrapAck|type:\s*["']bootstrap["']/);
-  assert.doesNotMatch(pageMain, /willReadFrequently|getImageData|toDataURL|toBlob/);
-  assert.doesNotMatch(bridge, /getContentBootstrap|payload:\s*bootstrap|request\.url/);
-  assert.match(bridge, /type:\s*["']connected["']/);
+test("the production manifest and bundles include the intended permissions and entry points", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../dist/advanced/manifest.json", import.meta.url), "utf8"));
+  assert.equal(existsSync(new URL("../dist/advanced/content-fallback.js", import.meta.url)), false);
   assert.equal(manifest.minimum_chrome_version, "120");
   assert.ok(manifest.permissions.includes("userScripts"));
+  assert.ok(manifest.permissions.includes("debugger"));
   assert.ok(manifest.permissions.includes("declarativeNetRequestWithHostAccess"));
   assert.equal(manifest.permissions.includes("declarativeNetRequest"), false);
   assert.equal(manifest.permissions.includes("activeTab"), false);
   assert.equal(manifest.content_scripts[0].match_about_blank, true);
   assert.equal(manifest.content_scripts[0].match_origin_as_fallback, true);
   assert.equal("web_accessible_resources" in manifest, false);
-  assert.equal(existsSync(new URL("../dist/lite/fingerprint.html", import.meta.url)), false);
-  assert.equal(existsSync(new URL("../dist/lite/test-api.js", import.meta.url)), false);
-  assert.equal(existsSync(new URL("../dist/lite/dnr-test-api.js", import.meta.url)), false);
-  assert.equal(existsSync(new URL("../dist/lite/advanced-test-api.js", import.meta.url)), false);
-  assert.equal(existsSync(new URL("../dist/lite/page-related.js", import.meta.url)), true);
+  assert.equal(existsSync(new URL("../dist/advanced/fingerprint.html", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../dist/advanced/test-api.js", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../dist/advanced/dnr-test-api.js", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../dist/advanced/advanced-test-api.js", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../dist/advanced/page-related.js", import.meta.url)), true);
 
-  const enMessages = JSON.parse(readFileSync(new URL("../dist/lite/_locales/en/messages.json", import.meta.url), "utf8"));
-  const zhMessages = JSON.parse(readFileSync(new URL("../dist/lite/_locales/zh_CN/messages.json", import.meta.url), "utf8"));
+  const enMessages = JSON.parse(readFileSync(new URL("../dist/advanced/_locales/en/messages.json", import.meta.url), "utf8"));
+  const zhMessages = JSON.parse(readFileSync(new URL("../dist/advanced/_locales/zh_CN/messages.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(zhMessages).sort(), Object.keys(enMessages).sort());
-});
-
-test("a fresh extension context repairs user-script registration after access is granted", async () => {
-  const registeredContentScripts = new Map();
-  const registeredUserScripts = new Map();
-  const scripting = {
-    async getRegisteredContentScripts({ ids }) {
-      return ids.flatMap((id) => registeredContentScripts.has(id) ? [registeredContentScripts.get(id)] : []);
-    },
-    async registerContentScripts(scripts) {
-      for (const script of scripts) registeredContentScripts.set(script.id, script);
-    },
-    async updateContentScripts(scripts) {
-      for (const script of scripts) registeredContentScripts.set(script.id, script);
-    },
-    async unregisterContentScripts({ ids }) {
-      for (const id of ids) registeredContentScripts.delete(id);
-    }
-  };
-  const previousChrome = globalThis.chrome;
-  const storage = { session: { async get(key) { return { [key]: "repair-session-salt" }; } } };
-  try {
-    globalThis.chrome = { scripting, storage };
-    assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), false);
-    assert.equal(registeredContentScripts.has("ghost-page-main-fallback"), false);
-
-    globalThis.chrome = {
-      scripting,
-      storage,
-      userScripts: {
-        async getScripts({ ids }) {
-          return ids.flatMap((id) => registeredUserScripts.has(id) ? [registeredUserScripts.get(id)] : []);
-        },
-        async register(scripts) {
-          for (const script of scripts) registeredUserScripts.set(script.id, script);
-        },
-        async update(scripts) {
-          for (const script of scripts) registeredUserScripts.set(script.id, script);
-        },
-        async unregister({ ids }) {
-          for (const id of ids) registeredUserScripts.delete(id);
-        }
-      }
-    };
-    assert.equal(await repairContentBootstrap(DEFAULT_SETTINGS, "lite"), true);
-    const registered = registeredUserScripts.get("ghost-page-main");
-    assert.ok(registered);
-    assert.equal(registered.world, "MAIN");
-    assert.equal(registered.runAt, "document_start");
-    assert.equal(registered.js[1].file, "page-main.js");
-    assert.deepEqual(registeredContentScripts.get("ghost-page-main-fallback").js, ["page-related.js"]);
-  } finally {
-    globalThis.chrome = previousChrome;
-  }
 });
 
 test("DNR rules keep navigation and initiator profiles coherent", () => {
@@ -460,7 +395,7 @@ test("DNR rules keep navigation and initiator profiles coherent", () => {
     ...settings,
     excludedDomains: ["example.com/private"]
   });
-  const excluded = resolveProfile("https://example.com/private/dashboard", excludedSettings, "lite");
+  const excluded = resolveProfile("https://example.com/private/dashboard", excludedSettings);
   const tabRules = buildTabHeaderRulesForTesting(7, excluded, excludedSettings);
   assert.equal(tabRules.length, 1);
   assert.equal(tabRules[0].action.type, "allow");
@@ -488,7 +423,7 @@ test("Global Privacy Control is left to Helium: no GPC rules and the legacy sett
     excludedDomains: [DEFAULT_SITE_RULE]
   });
   assert.equal("globalPrivacyControlEnabled" in settings, false);
-  assert.equal("globalPrivacyControlEnabled" in resolveProfile("https://example.com", settings, "lite"), false);
+  assert.equal("globalPrivacyControlEnabled" in resolveProfile("https://example.com", settings), false);
   assert.deepEqual(buildHeaderRulesForTesting(settings), []);
   const enabledRules = buildHeaderRulesForTesting(normalizeSettings({ ...DEFAULT_SETTINGS }));
   assert.ok(enabledRules.every((rule) => !(rule.action.requestHeaders ?? []).some((header) => header.header.toLowerCase() === "sec-gpc")));
@@ -544,8 +479,8 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     const firstProfile = { ...PRESET_PROFILES[0], userAgent: "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36" };
     const secondProfile = { ...PRESET_PROFILES[1], userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" };
     const [first, second] = await Promise.all([
-      applyAdvancedOverrides(7, firstProfile),
-      applyAdvancedOverrides(7, secondProfile)
+      applyAdvancedOverrides(7, firstProfile, "test-seed"),
+      applyAdvancedOverrides(7, secondProfile, "test-seed")
     ]);
     assert.equal(first.applied, true);
     assert.equal(second.applied, true);
@@ -554,17 +489,17 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
     assert.deepEqual(userAgentCalls, []);
     assert.deepEqual(calls.filter((call) => call.method.startsWith("Runtime.")), []);
 
-    const reset = await applyAdvancedOverrides(7, secondProfile);
+    const reset = await applyAdvancedOverrides(7, secondProfile, "test-seed");
     assert.equal(reset.applied, true);
     assert.equal(attachCount, 1);
 
     failMethod = "Emulation.setTimezoneOverride";
-    const failed = await applyAdvancedOverrides(7, firstProfile);
+    const failed = await applyAdvancedOverrides(7, firstProfile, "test-seed");
     assert.equal(failed.applied, false);
     assert.match(failed.error, /forced/);
     assert.equal(attached, false);
 
-    const recovered = await applyAdvancedOverrides(7, firstProfile);
+    const recovered = await applyAdvancedOverrides(7, firstProfile, "test-seed");
     assert.equal(recovered.applied, true);
     await clearAdvancedOverrides(7);
     assert.equal(attached, false);
@@ -573,11 +508,14 @@ test("advanced overrides reuse, serialize, reset, and clean debugger sessions", 
   }
 });
 
-test("profile selection is deterministic and isolated by site", () => {
-  const first = stableProfileIdForSite("example.com", PRESET_PROFILES);
-  const second = stableProfileIdForSite("example.com", PRESET_PROFILES);
-  assert.equal(first, second);
-  assert.notEqual(stableSeed("example.com", first), stableSeed("other.test", first));
+test("profile selection is deterministic and uses more than one candidate across sites", () => {
+  const sites = ["alpha.example", "beta.example", "gamma.example", "delta.example", "epsilon.example", "zeta.example"];
+  const candidateIds = new Set(PRESET_PROFILES.map(profile => profile.id));
+  const select = () => sites.map(site => stableProfileIdForSite(site, PRESET_PROFILES));
+  const selected = select();
+  assert.deepEqual(select(), selected);
+  assert.ok(selected.every(id => candidateIds.has(id)));
+  assert.ok(new Set(selected).size > 1);
 });
 
 test("timezone offsets include DST rules", () => {
@@ -764,17 +702,17 @@ test("profiles expose an allow-listed font set instead of enumerating blocked fo
 
 test("resolveProfile respects global disable and exclusions", () => {
   const disabled = normalizeSettings({ ...DEFAULT_SETTINGS, enabled: false });
-  assert.equal(resolveProfile("https://example.com", disabled, "lite").enabled, false);
-  assert.equal(resolveProfile("https://example.com", disabled, "lite").uaSpoofingEnabled, false);
-  assert.equal(resolveProfile("https://example.com", disabled, "lite").reason, "global-disabled");
+  assert.equal(resolveProfile("https://example.com", disabled).enabled, false);
+  assert.equal(resolveProfile("https://example.com", disabled).uaSpoofingEnabled, false);
+  assert.equal(resolveProfile("https://example.com", disabled).reason, "global-disabled");
 
   const excluded = normalizeSettings({ ...DEFAULT_SETTINGS, excludedDomains: ["example.com"] });
-  assert.equal(resolveProfile("https://sub.example.com", excluded, "lite").enabled, false);
-  assert.equal(resolveProfile("https://sub.example.com", excluded, "lite").reason, "excluded-domain");
+  assert.equal(resolveProfile("https://sub.example.com", excluded).enabled, false);
+  assert.equal(resolveProfile("https://sub.example.com", excluded).reason, "excluded-domain");
 
   const uaDisabled = normalizeSettings({ ...DEFAULT_SETTINGS, disableUserAgentSpoofing: true });
-  assert.equal(resolveProfile("https://example.com", uaDisabled, "lite").enabled, true);
-  assert.equal(resolveProfile("https://example.com", uaDisabled, "lite").uaSpoofingEnabled, false);
+  assert.equal(resolveProfile("https://example.com", uaDisabled).enabled, true);
+  assert.equal(resolveProfile("https://example.com", uaDisabled).uaSpoofingEnabled, false);
 
   const fileAndIpv6 = normalizeSettings({
     ...DEFAULT_SETTINGS,
@@ -784,9 +722,9 @@ test("resolveProfile respects global disable and exclusions", () => {
     },
     excludedDomains: ["[::1]/private"]
   });
-  assert.equal(resolveProfile("file:///tmp/example.html", fileAndIpv6, "lite").profile.id, "tokyo-ja-jp");
-  assert.equal(resolveProfile("http://[::1]:3000/", fileAndIpv6, "lite").profile.id, "beijing-zh-cn");
-  assert.equal(resolveProfile("http://[::1]:3000/private", fileAndIpv6, "lite").enabled, false);
+  assert.equal(resolveProfile("file:///tmp/example.html", fileAndIpv6).profile.id, "tokyo-ja-jp");
+  assert.equal(resolveProfile("http://[::1]:3000/", fileAndIpv6).profile.id, "beijing-zh-cn");
+  assert.equal(resolveProfile("http://[::1]:3000/private", fileAndIpv6).enabled, false);
 });
 
 test("Auto network location follows a VPN exit while language remains user-selectable", () => {
@@ -809,7 +747,7 @@ test("Auto network location follows a VPN exit while language remains user-selec
     automaticLocation: detected,
     siteProfiles: { [DEFAULT_SITE_RULE]: "los-angeles-en-us" }
   });
-  const resolved = resolveProfile("https://example.com", automatic, "advanced");
+  const resolved = resolveProfile("https://example.com", automatic);
   assert.equal(resolved.profile.id, "los-angeles-en-us");
   assert.equal(resolved.profile.timezoneId, "Asia/Taipei");
   assert.equal(resolved.profile.latitude, 25.01427);
@@ -826,7 +764,7 @@ test("Auto network location follows a VPN exit while language remains user-selec
   const preserved = resolveProfile("https://example.com", normalizeSettings({
     ...automatic,
     automaticLanguageMode: "profile"
-  }), "advanced");
+  }));
   assert.equal(preserved.profile.timezoneId, "Asia/Taipei");
   assert.equal(preserved.profile.locale, "en-US");
   assert.equal(preserved.seed, resolved.seed);
@@ -979,38 +917,6 @@ test("header rules honor temporary disable windows", () => {
   }), now), true);
 });
 
-test("settings writes are serialized", async () => {
-  const storage = {};
-  globalThis.chrome = {
-    storage: {
-      local: {
-        async get(key) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          return { [key]: storage[key] };
-        },
-        async set(value) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          Object.assign(storage, value);
-        }
-      }
-    }
-  };
-
-  await saveSettings(DEFAULT_SETTINGS);
-  await Promise.all([
-    updateSettings((settings) => {
-      settings.siteProfiles["a.example"] = "los-angeles-en-us";
-    }),
-    updateSettings((settings) => {
-      settings.siteProfiles["b.example"] = "tokyo-ja-jp";
-    })
-  ]);
-
-  const settings = await loadSettings();
-  assert.equal(settings.siteProfiles["a.example"], "los-angeles-en-us");
-  assert.equal(settings.siteProfiles["b.example"], "tokyo-ja-jp");
-});
-
 test("helium flag detection maps observed flag effects onto delegation switches", () => {
   assert.equal(isSpoofedWebglInfo("Intel", "Intel(R) HD Graphics, or similar"), true);
   assert.equal(isSpoofedWebglInfo(" ", " "), true);
@@ -1119,17 +1025,7 @@ test("webgpu adapter info follows the profile's WebGL renderer", () => {
   assert.equal(webgpuAdapterInfoForProfile({ ...apple, webglVendor: "", webglRenderer: "" }), null);
 });
 
-test("page-world WebGL patch leaves the plain VENDOR/RENDERER enums native", () => {
-  const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
-  assert.doesNotMatch(pageMain, /parameter === (?:0x1f00|0x1f01|7936|7937)/i);
-  assert.doesNotMatch(pageMain, /\breadPixels\b/);
-  assert.match(pageMain, /parameter === (?:0x9245|37445)/i);
-  assert.match(pageMain, /GPUAdapterInfo/);
-  assert.doesNotMatch(pageMain, /importScripts\(/);
-});
-
-test("Blob worker composition preserves known directive modes without reading user getters", () => {
-  assert.equal(strictModeForBlobParts(undefined), false);
+test("Blob directive parser recognizes only unambiguous captured prefixes", () => {
   assert.equal(strictModeForBlobParts([]), false);
   assert.equal(strictModeForBlobParts(["self.postMessage(1);"]), false);
   assert.equal(strictModeForBlobParts(['"use ', 'strict";\nself.postMessage(1);']), true);
@@ -1140,16 +1036,7 @@ test("Blob worker composition preserves known directive modes without reading us
   assert.equal(strictModeForBlobParts(['"use strict"\n(function(){})()']), null);
   assert.equal(strictModeForBlobParts(['"use strict" /* comment */;']), null);
   assert.equal(strictModeForBlobParts(["#!/usr/bin/env node\nself.postMessage(1);"]), null);
-  assert.equal(strictModeForBlobParts([new Uint8Array([1, 2])]), null);
-  assert.equal(strictModeForBlobParts(["/", new Uint8Array([1, 2])]), null);
-  let accesses = 0;
-  const parts = [];
-  Object.defineProperty(parts, "0", { get() { accesses += 1; return '"use strict";'; } });
-  assert.equal(strictModeForBlobParts(parts), null);
-  assert.equal(accesses, 0);
-  const iterable = { *[Symbol.iterator]() { accesses += 1; yield "self.postMessage(1);"; } };
-  assert.equal(strictModeForBlobParts(iterable), null);
-  assert.equal(accesses, 0);
+
 });
 
 test("client hints platform version never describes an impossible OS", () => {

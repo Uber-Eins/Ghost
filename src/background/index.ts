@@ -1,13 +1,11 @@
 import { applyAdvancedOverrides, clearAdvancedOverrides } from "./advanced";
-import type { AdvancedResult } from "./advanced";
 import { fetchAutomaticLocation } from "./automatic-location";
 import { isSynchronousContentBootstrapAvailable, refreshContentBootstrap } from "./bootstrap";
-import { clearTabHeaderRule, refreshHeaderRules, refreshTabHeaderRule, validateHeaderRules } from "./dnr";
+import { clearTabHeaderRule, refreshHeaderRules, refreshTabHeaderRule, prepareHeaderRules } from "./dnr";
 import { getSessionSalt } from "./session-seed";
 import { stableSeed } from "../shared/hash";
 import { applyHeliumFlagDetection, detectHeliumFlags, normalizeHeliumFlagDetection, sameHeliumSurfaces } from "../shared/helium-detect";
 import type { HeliumFlagDetection } from "../shared/helium-detect";
-import { sameAutomaticLocation } from "../shared/automatic-location";
 import { isAccessiblePageUrl, isSupportedPageUrl, senderBoundPageUrl, unsupportedPageLabel } from "../shared/internal";
 import { findProfile } from "../shared/profiles";
 import { bestMatchingSiteRule, DEFAULT_SITE_RULE, exclusionsForSiteToggle, isExcludedUrl, normalizeSiteRuleKey, siteKeyFromUrl } from "../shared/site";
@@ -18,13 +16,12 @@ import {
   normalizeSettings,
   profileIdForSiteKey,
   profilesFromSettings,
-  readSettings,
+  loadSettings,
   resolveProfile,
-  updateSettings
+  saveSettings
 } from "../shared/storage";
-import type { BuildTarget, GhostSettings, PopupState, RuntimeRequest, RuntimeResponse } from "../shared/types";
+import type { GhostSettings, PopupState, RuntimeRequest, RuntimeResponse } from "../shared/types";
 
-declare const __GHOST_BUILD__: BuildTarget;
 declare const __GHOST_CHANNEL__: string;
 
 const ENABLED_ICON_PATHS = iconSet("enabled");
@@ -35,8 +32,6 @@ const AUTOMATIC_LOCATION_REFRESH_MINUTES = 5;
 const AUTOMATIC_LOCATION_FRESH_MS = AUTOMATIC_LOCATION_REFRESH_MINUTES * 60_000;
 const SUPPORTED_TAB_URL_PATTERNS = ["http://*/*", "https://*/*", "file:///*"];
 let settingsRevision = 0;
-let settingsRefreshRevision = 0;
-let settingsRefreshQueue: Promise<void> = Promise.resolve();
 let settingsApplicationQueue: Promise<void> = Promise.resolve();
 let automaticLocationRefresh: Promise<GhostSettings> | null = null;
 let initialization: Promise<void> | null = null;
@@ -96,19 +91,10 @@ runBackgroundTask(initialize());
 
 function initialize(): Promise<void> {
   if (!initialization) {
-    initialization = enqueueSettingsApplication(initializeNow);
+    initialization = mutateAndRefresh(() => {}).then(() => undefined);
     void initialization.catch(() => { initialization = null; });
   }
   return initialization;
-}
-
-async function initializeNow(): Promise<void> {
-  const settings = await updateSettings(async (draft) => {
-    const normalized = normalizeSettings(draft);
-    await validateHeaderRules(normalized);
-    Object.assign(draft, normalized);
-  });
-  await refreshAfterSettingsChange(settings);
 }
 
 async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.MessageSender): Promise<unknown> {
@@ -117,6 +103,8 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
       return handleResolveProfile(message.url, sender);
     case "getPopupState":
       return getPopupState(message.url);
+    case "recheckContentBootstrap":
+      return enqueueSettingsApplication(async () => refreshContentBootstrap(await loadSettings(), await getSessionSalt()));
     case "setGlobalEnabled":
       return mutateAndRefresh((settings) => {
         settings.enabled = message.enabled;
@@ -173,12 +161,11 @@ async function handleMessage(message: RuntimeRequest, sender: chrome.runtime.Mes
       return applyDetectedHeliumFlags(normalizeHeliumFlagDetection(message.detection));
     case "options.getState":
       // Wait for the short global commit, never the detached tab fan-outs.
-      // This also avoids UI bootstrap repair racing cold-worker registration.
       return readAppliedSettings();
     case "options.saveState": {
       const settings = await mutateAndRefresh((draft) => {
         const normalized = normalizeSettings(message.settings);
-        Object.assign(draft, normalized);
+        Object.assign(draft, normalized, { automaticLocation: draft.automaticLocation });
       });
       if (settings.automaticLocationEnabled) {
         runBackgroundTask(synchronizeAutomaticLocation(true));
@@ -205,7 +192,6 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
     const settings = await readAppliedSettings();
     const profile = findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
-      build: __GHOST_BUILD__,
       enabled: false,
       uaSpoofingEnabled: false,
       canvasMeasureTextSpoofingEnabled: false,
@@ -217,43 +203,31 @@ async function handleResolveProfile(url: string, sender: chrome.runtime.MessageS
       seed: stableSeed("", profile.id),
       profile,
       advanced: {
-        available: __GHOST_BUILD__ === "advanced",
         attempted: false,
         applied: false
       }
     };
   }
 
+  const sessionSalt = await getSessionSalt();
   const settings = await refreshExpiredTemporaryDisable(await readAppliedSettings());
   const revision = settingsRevision;
-  const sessionSalt = await getSessionSalt();
   const resolved = resolveFrameProfile(pageUrl, topLevelUrl, settings, sessionSalt);
 
-  if (revision !== settingsRevision) {
-    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
-  }
-
-  if (tabId !== null && tabRevision === currentTabOverrideRevision(tabId)) {
-    await refreshTabHeaderRule(tabId, resolved, settings, () => (
-      revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
-    ));
-  }
-
-  if (revision !== settingsRevision) {
-    return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
-  }
-
   if (tabId !== null) {
+    const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
+    if (isCurrent()) {
+      await refreshTabHeaderRule(tabId, resolved, settings, isCurrent);
+    }
     // The synchronous bootstrap/page profile is already usable. Do not hold
     // its reply behind a paused or unresponsive debugger target. Advanced
     // metadata stays unapplied in this reply; it is not a completion report.
-    runBackgroundTask(refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision));
+    runBackgroundTask(refreshAdvancedOverrideForTab(tabId, resolved, settings, isCurrent));
   }
 
   if (revision !== settingsRevision) {
     return resolveFrameProfile(pageUrl, topLevelUrl, await readAppliedSettings(), sessionSalt);
   }
-
   return resolved;
 }
 
@@ -263,7 +237,7 @@ function trustedTopLevelUrl(sender: chrome.runtime.MessageSender, fallbackUrl: s
 }
 
 function resolveFrameProfile(pageUrl: string, topLevelUrl: string, settings: GhostSettings, sessionSalt: string) {
-  return resolveProfile(pageUrl, settings, __GHOST_BUILD__, Date.now(), topLevelUrl, sessionSalt);
+  return resolveProfile(pageUrl, settings, Date.now(), topLevelUrl, sessionSalt);
 }
 
 function shouldApplyTabWideOverrides(sender: chrome.runtime.MessageSender): sender is chrome.runtime.MessageSender & { tab: chrome.tabs.Tab & { id: number } } {
@@ -284,21 +258,14 @@ async function refreshAdvancedOverrideForTab(
   tabId: number,
   resolved: ReturnType<typeof resolveProfile>,
   settings: GhostSettings,
-  tabRevision: number
-): Promise<AdvancedResult | null> {
-  const revision = settingsRevision;
-  const isCurrent = () => revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId);
-  if (__GHOST_BUILD__ !== "advanced" || !isCurrent()) {
-    return null;
-  }
-  let result: AdvancedResult;
+  isCurrent: () => boolean
+): Promise<void> {
+  if (!isCurrent()) return;
   if (resolved.enabled && settings.advancedEnabled) {
-    result = await applyAdvancedOverrides(tabId, resolved.profile, isCurrent);
+    await applyAdvancedOverrides(tabId, resolved.profile, resolved.seed, isCurrent);
   } else {
     await clearAdvancedOverrides(tabId, isCurrent);
-    result = { attempted: false, applied: false };
   }
-  return isCurrent() ? result : null;
 }
 
 async function refreshTabForNavigation(tabId: number, url: string, tabRevision: number): Promise<void> {
@@ -308,9 +275,7 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
     return;
   }
   await clearTabHeaderRule(tabId, isCurrent);
-  if (__GHOST_BUILD__ === "advanced") {
-    await clearAdvancedOverrides(tabId, isCurrent);
-  }
+  await clearAdvancedOverrides(tabId, isCurrent);
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
@@ -318,25 +283,20 @@ async function refreshTabForNavigation(tabId: number, url: string, tabRevision: 
     return;
   }
 
+  const sessionSalt = await getSessionSalt();
   const settings = await readAppliedSettings();
   const revision = settingsRevision;
   if (tabRevision !== currentTabOverrideRevision(tabId)) {
     return;
   }
-  const resolved = resolveProfile(url, settings, __GHOST_BUILD__);
-  await refreshTabHeaderRule(tabId, resolved, settings, () => (
-    revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
-  ));
-  if (revision !== settingsRevision) {
-    return;
-  }
-  await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
+  const resolved = resolveFrameProfile(url, url, settings, sessionSalt);
+  const overridesCurrent = () => revision === settingsRevision && isCurrent();
+  await refreshTabHeaderRule(tabId, resolved, settings, overridesCurrent);
+  await refreshAdvancedOverrideForTab(tabId, resolved, settings, overridesCurrent);
 }
 
 async function getPopupState(url: string): Promise<PopupState> {
-  // Only the global commit gates a control-panel read. Waiting for initial
-  // registration avoids a race with the fresh popup's bootstrap repair;
-  // debugger targets and content-script responses are not part of this queue.
+  // Only the global commit gates a control-panel read, not open-tab updates.
   const settings = await readAppliedSettings();
   if (settings.temporaryDisabledUntil !== null && settings.temporaryDisabledUntil <= Date.now()) {
     runBackgroundTask(refreshExpiredTemporaryDisable(settings));
@@ -346,10 +306,9 @@ async function getPopupState(url: string): Promise<PopupState> {
   const fileAccessRequired = protocolSupported && url.startsWith("file:") && !await pageSchemeAccessAllowed(url);
   if (!protocolSupported || fileAccessRequired) {
     const profile = protocolSupported
-      ? resolveProfile(url, settings, __GHOST_BUILD__).profile
+      ? resolveProfile(url, settings).profile
       : findProfile(undefined, settings.customProfiles, settings.hiddenPresetProfileIds);
     return {
-      build: __GHOST_BUILD__,
       settings,
       url,
       siteKey: fileAccessRequired ? siteKeyFromUrl(url) : unsupportedPageLabel(url),
@@ -358,15 +317,13 @@ async function getPopupState(url: string): Promise<PopupState> {
       earlyBootstrapAvailable,
       enabledForSite: false,
       profile,
-      profiles: profilesFromSettings(settings),
-      advancedAvailable: __GHOST_BUILD__ === "advanced"
+      profiles: profilesFromSettings(settings)
     };
   }
 
   const siteKey = siteKeyFromUrl(url);
-  const resolved = resolveProfile(url, settings, __GHOST_BUILD__);
+  const resolved = resolveProfile(url, settings);
   return {
-    build: __GHOST_BUILD__,
     settings,
     url,
     siteKey,
@@ -375,8 +332,7 @@ async function getPopupState(url: string): Promise<PopupState> {
     earlyBootstrapAvailable,
     enabledForSite: !isExcludedUrl(url, settings.excludedDomains),
     profile: resolved.profile,
-    profiles: profilesFromSettings(settings),
-    advancedAvailable: __GHOST_BUILD__ === "advanced"
+    profiles: profilesFromSettings(settings)
   };
 }
 
@@ -391,38 +347,30 @@ async function pageSchemeAccessAllowed(url: string): Promise<boolean> {
   }
 }
 
-function mutateAndRefresh(mutator: (settings: GhostSettings) => void): Promise<GhostSettings> {
-  return enqueueSettingsApplication(() => mutateAndRefreshNow(mutator));
-}
-
-async function mutateAndRefreshNow(mutator: (settings: GhostSettings) => void): Promise<GhostSettings> {
-  let previousSettings = normalizeSettings(DEFAULT_SETTINGS);
-  const settings = await updateSettings(async (draft) => {
-    previousSettings = normalizeSettings(draft);
-    mutator(draft);
-    const normalized = normalizeSettings(draft);
-    await validateHeaderRules(normalized);
-    Object.assign(draft, normalized);
-  });
-  settingsRevision += 1;
-  const mutationRevision = settingsRevision;
-  try {
-    await refreshAfterSettingsChange(settings);
-    return settings;
-  } catch (error) {
-    if (settingsRevision === mutationRevision) {
-      const rolledBack = await updateSettings((draft) => {
-        Object.assign(draft, previousSettings);
-      });
-      settingsRevision += 1;
+function mutateAndRefresh(mutator: (settings: GhostSettings) => void | false): Promise<GhostSettings> {
+  return enqueueSettingsApplication(async () => {
+    const previous = await loadSettings();
+    const draft = structuredClone(previous);
+    if (mutator(draft) === false) return previous;
+    const settings = normalizeSettings(draft);
+    const rules = await prepareHeaderRules(settings);
+    const revision = ++settingsRevision;
+    await saveSettings(settings);
+    try {
+      await applyGlobalSettings(settings, rules);
+    } catch (error) {
       try {
-        await refreshAfterSettingsChange(rolledBack);
+        await saveSettings(previous);
+        await applyGlobalSettings(previous, await prepareHeaderRules(previous));
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Ghost failed to apply settings and to restore the previous runtime state.");
       }
+      refreshTabs(previous, revision);
+      throw error;
     }
-    throw error;
-  }
+    refreshTabs(settings, revision);
+    return settings;
+  });
 }
 
 function enqueueSettingsApplication<T>(operation: () => Promise<T>): Promise<T> {
@@ -435,7 +383,7 @@ async function readAppliedSettings(): Promise<GhostSettings> {
   while (true) {
     const pending = settingsApplicationQueue;
     await pending;
-    const settings = await readSettings();
+    const settings = await loadSettings();
     if (pending === settingsApplicationQueue) {
       return settings;
     }
@@ -454,48 +402,18 @@ async function refreshExpiredTemporaryDisable(settings: GhostSettings): Promise<
   });
 }
 
-async function refreshAfterSettingsChange(settings: GhostSettings): Promise<void> {
-  settingsRefreshRevision += 1;
-  const refreshRevision = settingsRefreshRevision;
-  const pending = settingsRefreshQueue.then(
-    () => refreshAfterSettingsChangeIfCurrent(settings, refreshRevision),
-    () => refreshAfterSettingsChangeIfCurrent(settings, refreshRevision)
-  );
-  settingsRefreshQueue = pending.then(() => undefined, () => undefined);
-  return pending;
+async function applyGlobalSettings(settings: GhostSettings, rules: chrome.declarativeNetRequest.Rule[]): Promise<void> {
+  await scheduleTemporaryDisableAlarm(settings);
+  await scheduleAutomaticLocationAlarm(settings);
+  await refreshContentBootstrap(settings, await getSessionSalt());
+  await refreshHeaderRules(rules);
+  await updateActionIcon(settings);
 }
 
-async function refreshAfterSettingsChangeIfCurrent(settings: GhostSettings, refreshRevision: number): Promise<void> {
-  // Only extension-global protection belongs to the settings transaction.
-  // Never await debugger targets or content-script responses here: both can
-  // outlive the UI and block every subsequent save/startup read indefinitely.
-  const steps: Array<() => Promise<void>> = [
-    () => scheduleTemporaryDisableAlarm(settings),
-    () => scheduleAutomaticLocationAlarm(settings),
-    async () => refreshContentBootstrap(settings, __GHOST_BUILD__, await getSessionSalt()),
-    () => refreshHeaderRules(settings),
-    () => updateActionIcon(settings)
-  ];
-  const errors: unknown[] = [];
-  for (const step of steps) {
-    if (refreshRevision !== settingsRefreshRevision) {
-      return;
-    }
-    try {
-      await step();
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (errors.length > 0) {
-    throw new AggregateError(errors, "One or more Ghost runtime refreshes failed.");
-  }
-  if (refreshRevision === settingsRefreshRevision) {
-    // Independent fan-outs: page profile updates must not wait for CDP, and
-    // a stuck tab from one revision must not gate dispatch of the next one.
-    runBackgroundTask(refreshOpenPageProfiles(refreshRevision));
-    runBackgroundTask(refreshKnownTabOverrides(settings, refreshRevision));
-  }
+function refreshTabs(settings: GhostSettings, revision: number): void {
+  // A slow debugger or content-script reply must not hold the settings queue.
+  runBackgroundTask(refreshOpenPageProfiles(revision));
+  runBackgroundTask(refreshKnownTabOverrides(settings, revision));
 }
 
 async function handleTemporaryDisableExpired(): Promise<void> {
@@ -529,7 +447,7 @@ async function scheduleAutomaticLocationAlarm(settings: GhostSettings): Promise<
 async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettings> {
   // Network I/O is deliberately kept outside settingsApplicationQueue. That
   // queue covers commits/global protection, not tab fan-outs or network I/O.
-  const settings = await readSettings();
+  const settings = await readAppliedSettings();
   if (!settings.automaticLocationEnabled) {
     return settings;
   }
@@ -545,40 +463,20 @@ async function synchronizeAutomaticLocation(force: boolean): Promise<GhostSettin
   }
 
   automaticLocationRefresh = fetchAutomaticLocation()
-    .then((location) => applyAutomaticLocationNow(location))
+    .then((location) => mutateAndRefresh((draft) => {
+      if (!draft.automaticLocationEnabled) return false;
+      draft.automaticLocation = location;
+    }))
     .finally(() => {
       automaticLocationRefresh = null;
     });
   return automaticLocationRefresh;
 }
 
-async function applyAutomaticLocationNow(location: NonNullable<GhostSettings["automaticLocation"]>): Promise<GhostSettings> {
-  let effectiveLocationChanged = false;
-  const settings = await updateSettings((draft) => {
-    if (!draft.automaticLocationEnabled) {
-      return;
-    }
-    effectiveLocationChanged = !sameAutomaticLocation(draft.automaticLocation, location);
-    draft.automaticLocation = location;
-  });
-  if (effectiveLocationChanged) {
-    settingsRevision += 1;
-    // Persisting the detected result completes the refresh request. Reapplying
-    // it to every open tab continues in the background instead of blocking all
-    // runtime messages and the options page.
-    runBackgroundTask(enqueueSettingsApplication(async () => {
-      // A UI commit may already be queued. Read its latest stored result here
-      // rather than replaying an older location-refresh snapshot over it.
-      await refreshAfterSettingsChange(await readSettings());
-    }));
-  }
-  return settings;
-}
-
 // The service worker can probe WebGL and client hints itself; the measureText
 // probe needs real documents, so that switch is only synced from Ghost's pages.
 async function synchronizeHeliumFlagsFromRuntime(): Promise<void> {
-  const settings = await readSettings();
+  const settings = await loadSettings();
   if (!settings.heliumFlagSync) {
     return;
   }
@@ -601,43 +499,42 @@ async function applyDetectedHeliumFlags(detection: HeliumFlagDetection): Promise
   });
 }
 
-async function refreshKnownTabOverrides(settings: GhostSettings, refreshRevision: number): Promise<void> {
+async function refreshKnownTabOverrides(settings: GhostSettings, revision: number): Promise<void> {
   if (!chrome.tabs?.query) {
     return;
   }
+  const sessionSalt = await getSessionSalt();
   const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URL_PATTERNS }).catch(() => []);
   await Promise.all(tabs.map(async (tab) => {
-    if (refreshRevision !== settingsRefreshRevision) {
+    if (revision !== settingsRevision) {
       return;
     }
     if (typeof tab.id !== "number" || typeof tab.url !== "string" || !isSupportedPageUrl(tab.url) || !await pageSchemeAccessAllowed(tab.url)) {
       return;
     }
+    if (revision !== settingsRevision) return;
     const tabId = tab.id;
     const tabRevision = nextTabOverrideRevision(tabId);
     const isCurrent = () => (
-      refreshRevision === settingsRefreshRevision && tabRevision === currentTabOverrideRevision(tabId)
+      revision === settingsRevision && tabRevision === currentTabOverrideRevision(tabId)
     );
-    const resolved = resolveProfile(tab.url, settings, __GHOST_BUILD__);
+    const resolved = resolveFrameProfile(tab.url, tab.url, settings, sessionSalt);
     if (!isCurrent()) {
       return;
     }
     await refreshTabHeaderRule(tabId, resolved, settings, isCurrent);
-    if (!isCurrent()) {
-      return;
-    }
-    await refreshAdvancedOverrideForTab(tabId, resolved, settings, tabRevision);
+    await refreshAdvancedOverrideForTab(tabId, resolved, settings, isCurrent);
   }));
 }
 
-async function refreshOpenPageProfiles(refreshRevision: number): Promise<void> {
+async function refreshOpenPageProfiles(revision: number): Promise<void> {
   if (!chrome.tabs?.query || !chrome.tabs?.sendMessage) {
     return;
   }
 
   const tabs = await chrome.tabs.query({ url: SUPPORTED_TAB_URL_PATTERNS }).catch(() => []);
   await Promise.all(tabs.map(async (tab) => {
-    if (refreshRevision !== settingsRefreshRevision || typeof tab.id !== "number") {
+    if (revision !== settingsRevision || typeof tab.id !== "number") {
       return;
     }
     await chrome.tabs.sendMessage(tab.id, {

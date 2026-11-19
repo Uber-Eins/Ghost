@@ -1,37 +1,15 @@
 const MAX_DIRECTIVE_PREFIX_LENGTH = 16_384;
 
-// The page cannot synchronously read a Blob. Record only the directive mode
-// that can be determined from plain string parts, without repeating the Blob
-// constructor's coercions, consuming iterators, or calling user getters.
-// Unknown sources stay native rather than introducing a second script fetch.
-export function strictModeForBlobParts(parts: unknown): boolean | null {
-  if (parts === undefined) {
-    return false;
+// The caller supplies only strings observed during native Blob conversion.
+export function strictModeForBlobParts(parts: readonly string[]): boolean | null {
+  let prefix = "";
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index];
+    const remaining = MAX_DIRECTIVE_PREFIX_LENGTH - prefix.length;
+    prefix += part.slice(0, remaining);
+    if (part.length >= remaining) return strictModeFromPrefix(prefix, false);
   }
-  if (!Array.isArray(parts)) {
-    return null;
-  }
-  try {
-    const length = Object.getOwnPropertyDescriptor(parts, "length")?.value;
-    if (typeof length !== "number") {
-      return null;
-    }
-    let prefix = "";
-    for (let index = 0; index < length; index += 1) {
-      const part = Object.getOwnPropertyDescriptor(parts, String(index));
-      if (!part || !("value" in part) || typeof part.value !== "string") {
-        return strictModeFromPrefix(prefix, false);
-      }
-      const remaining = MAX_DIRECTIVE_PREFIX_LENGTH - prefix.length;
-      prefix += part.value.slice(0, remaining);
-      if (part.value.length >= remaining) {
-        return strictModeFromPrefix(prefix, false);
-      }
-    }
-    return strictModeFromPrefix(prefix, true);
-  } catch {
-    return null;
-  }
+  return strictModeFromPrefix(prefix, true);
 }
 
 function strictModeFromPrefix(prefix: string, complete: boolean): boolean | null {

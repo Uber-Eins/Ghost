@@ -3,26 +3,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
 import vm from "node:vm";
-import { DEFAULT_SETTINGS, normalizeSettings, repairContentBootstrap, resolveProfile, stableSeed } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile, stableSeed } from "../dist/test/test-api.js";
 
 const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": "tokyo-ja-jp" } });
 const url = "https://example.com/path";
 const resolve = (salt, pageUrl = url, partitionUrl = pageUrl) =>
-  resolveProfile(pageUrl, settings, "lite", 0, partitionUrl, salt);
+  resolveProfile(pageUrl, settings, 0, partitionUrl, salt);
 
 test("session seed is stable for the same salt, top-level site and profile", () => {
   assert.equal(resolve("session-one").seed, resolve("session-one").seed);
   assert.equal(resolve("session-one").seed, resolve("session-one", "https://other.test/frame", url).seed);
 });
 
-test("session seed rotates with the salt", () => {
-  assert.notEqual(resolve("session-one").seed, resolve("session-two").seed);
-});
-
-test("session seed is partitioned by site and profile", () => {
-  assert.notEqual(resolve("session-one").seed, resolve("session-one", "https://other.test/").seed);
+test("session seed rotates across sites, salts and profile ids", () => {
+  const seeds = [url, "https://other.test/"].flatMap(site =>
+    ["session-one", "session-two"].map(salt => resolve(salt, site).seed));
+  assert.equal(new Set(seeds).size, 4);
   const otherProfile = normalizeSettings({ ...settings, siteProfiles: { "*": "new-york-en-us" } });
-  assert.notEqual(resolve("session-one").seed, resolveProfile(url, otherProfile, "lite", 0, url, "session-one").seed);
+  assert.notEqual(resolve("session-one").seed, resolveProfile(url, otherProfile, 0, url, "session-one").seed);
 });
 
 test("salt never changes persistent profile selection or settings", () => {
@@ -39,31 +37,7 @@ test("missing session salt preserves the deterministic legacy seed", () => {
   assert.equal(legacy.seed, resolve().seed);
 });
 
-test("fresh popup repair reads the current session salt without writing storage", async () => {
-  const previousChrome = globalThis.chrome;
-  let salt = "current-session";
-  let registered;
-  globalThis.chrome = {
-    storage: { session: { async get(key) { return { [key]: salt }; } } },
-    userScripts: {
-      async getScripts() { return registered ? [registered] : []; },
-      async register(scripts) { [registered] = scripts; },
-      async update(scripts) { [registered] = scripts; }
-    }
-  };
-  try {
-    assert.equal(await repairContentBootstrap(settings, "lite"), true);
-    assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
-    salt = "next-session";
-    assert.equal(await repairContentBootstrap(settings, "lite"), true);
-    assert.equal(JSON.parse(registered.js[0].code.match(/const p=(.*?);try/)[1]).sessionSalt, salt);
-  } finally {
-    globalThis.chrome = previousChrome;
-  }
-});
-
-
-const pageMain = readFileSync(new URL("../dist/lite/page-main.js", import.meta.url), "utf8");
+const pageMain = readFileSync(new URL("../dist/advanced/page-main.js", import.meta.url), "utf8");
 
 function pageHarness(bootstrap) {
   const context = vm.createContext({ crypto: webcrypto, URL, queueMicrotask, __GHOST_BOOTSTRAP_SETTINGS__: bootstrap });
@@ -111,7 +85,7 @@ function pageHarness(bootstrap) {
 }
 
 test("bootstrap documents keep their original noise through restart-race replies and history refreshes", () => {
-  const page = pageHarness({ settings, build: "lite", sessionSalt: "previous-session" });
+  const page = pageHarness({ settings, sessionSalt: "previous-session" });
   const initialWidth = page.width();
   assert.equal(page.bootstrapDeleted, true);
   page.profile(resolve("new-session"));
@@ -125,7 +99,7 @@ test("bootstrap documents keep their original noise through restart-race replies
 });
 
 test("older bootstrap payloads without salt keep deterministic noise without reloading", () => {
-  const page = pageHarness({ settings, build: "lite" });
+  const page = pageHarness({ settings });
   const initialWidth = page.width();
   page.refresh();
   page.profile(resolve("new-session"));
@@ -136,7 +110,7 @@ test("older bootstrap payloads without salt keep deterministic noise without rel
 test("fallback documents without bootstrap keep adopting asynchronous session seeds", () => {
   const page = pageHarness(undefined);
   page.profile(resolve("new-session"));
-  const saltedPage = pageHarness({ settings, build: "lite", sessionSalt: "new-session" });
+  const saltedPage = pageHarness({ settings, sessionSalt: "new-session" });
   assert.equal(page.width(), saltedPage.width());
   assert.equal(page.reloads, 0);
 });

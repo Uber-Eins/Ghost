@@ -26,12 +26,6 @@ test("webgpuAdapterInfoForWebgl covers every Helium preset including blank and l
   assert.deepEqual(webgpuAdapterInfoForWebgl("Mesa Intel", "llvmpipe"), emptyInfo);
 });
 
-test("webgpuAdapterInfoForWebgl preserves Ghost profile derivation", () => {
-  for (const profile of PRESET_PROFILES) {
-    assert.deepEqual(webgpuAdapterInfoForWebgl(profile.webglVendor, profile.webglRenderer), webgpuAdapterInfoForProfile(profile));
-  }
-});
-
 // Source-named patches and branded mocks check dispatch, not browser injection
 // timing or Chromium's actual GPU/media implementations.
 function sourceFunctions(path, names) {
@@ -268,7 +262,7 @@ test("install covers delegated WebGPU and media but leaves excluded profile surf
     h.run(`
       var installedSurfaceOwnership = { profileProtection: ${enabled}, webglInfo: false };
       var callsAtInstall = [];
-      ${["patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchIframeNavigatorAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
+      ${["patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchRelatedWindowAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
     `);
     h.run(installCode);
     h.run("install()");

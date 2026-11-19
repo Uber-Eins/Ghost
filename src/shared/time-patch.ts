@@ -17,11 +17,6 @@ export interface TimePatchContext {
   maskAsNative<T>(wrapper: T, native: unknown): T;
 }
 
-interface IntlInstanceMetadata {
-  locale?: string;
-  timeZone?: string;
-}
-
 const NativeDate = Date;
 const NativeIntl = {
   DateTimeFormat: Intl.DateTimeFormat,
@@ -33,7 +28,7 @@ const NativeIntl = {
   DisplayNames: Intl.DisplayNames,
   Segmenter: Intl.Segmenter
 };
-const intlInstanceMetadata = new WeakMap<object, IntlInstanceMetadata>();
+const injectedLocales = new WeakMap<object, string>();
 
 export function installTimePatches(context: TimePatchContext): void {
   patchIntl(context);
@@ -41,7 +36,7 @@ export function installTimePatches(context: TimePatchContext): void {
 }
 
 function patchIntl(context: TimePatchContext): void {
-  patchIntlConstructor(context, "DateTimeFormat", "timeZone");
+  patchIntlConstructor(context, "DateTimeFormat", true);
   patchIntlConstructor(context, "NumberFormat");
   patchIntlConstructor(context, "Collator");
   patchIntlConstructor(context, "PluralRules");
@@ -51,7 +46,7 @@ function patchIntl(context: TimePatchContext): void {
   patchIntlConstructor(context, "Segmenter");
 }
 
-function patchIntlConstructor(context: TimePatchContext, name: keyof typeof NativeIntl, timeZoneOption?: "timeZone"): void {
+function patchIntlConstructor(context: TimePatchContext, name: keyof typeof NativeIntl, injectTimeZone = false): void {
   const { maskAsNative } = context;
   const NativeConstructor = NativeIntl[name] as unknown as new (...args: unknown[]) => object;
   if (typeof NativeConstructor !== "function") {
@@ -59,24 +54,16 @@ function patchIntlConstructor(context: TimePatchContext, name: keyof typeof Nati
   }
 
   function createInstance(args: unknown[], receiver: unknown, newTarget?: Function): object {
-    const [locales, options] = args as [unknown, Record<string, unknown> | undefined];
-    const metadata: IntlInstanceMetadata = {};
-    const shouldDefaultLocale = context.enabled() && locales === undefined;
-    const nextLocales = shouldDefaultLocale ? context.intlLocale() : locales;
-    const nextOptions = { ...(options ?? {}) };
-    if (context.enabled() && timeZoneOption && nextOptions.timeZone === undefined) {
-      nextOptions.timeZone = context.timezoneId();
-      metadata.timeZone = context.timezoneId();
+    if (!context.enabled()) {
+      return newTarget ? Reflect.construct(NativeConstructor, args, newTarget)
+        : Reflect.apply(NativeConstructor, receiver, args) as object;
     }
-    if (shouldDefaultLocale) {
-      metadata.locale = context.intlLocale();
-    }
-    const instance = newTarget
-      ? Reflect.construct(NativeConstructor, [nextLocales, nextOptions], newTarget)
-      : Reflect.apply(NativeConstructor, receiver, [nextLocales, nextOptions]) as object;
-    if (metadata.locale || metadata.timeZone) {
-      intlInstanceMetadata.set(instance, metadata);
-    }
+    const [locales, options] = args;
+    const locale = locales === undefined ? context.intlLocale() : undefined;
+    const nextArgs = [locale ?? locales, injectTimeZone ? withTimeZone(context, options) : options];
+    const instance = newTarget ? Reflect.construct(NativeConstructor, nextArgs, newTarget)
+      : Reflect.apply(NativeConstructor, receiver, nextArgs) as object;
+    if (locale) injectedLocales.set(instance, locale);
     return instance;
   }
 
@@ -96,13 +83,9 @@ function patchIntlConstructor(context: TimePatchContext, name: keyof typeof Nati
       configurable: true,
       value: maskAsNative(wrapNative(nativeResolvedOptions, (target, receiver, args) => {
         const result = Reflect.apply(target, receiver, args) as Record<string, unknown>;
-        const metadata = intlInstanceMetadata.get(receiver);
-        if (context.enabled() && metadata?.locale) {
-          result.locale = metadata.locale;
-        }
-        if (context.enabled() && timeZoneOption && metadata?.timeZone) {
-          result.timeZone = metadata.timeZone;
-        }
+        // Some constructors resolve a profile tag to a less specific locale.
+        const locale = injectedLocales.get(receiver);
+        if (context.enabled() && locale) result.locale = locale;
         return result;
       }), nativeResolvedOptions)
     });
@@ -208,7 +191,7 @@ function patchDate(context: TimePatchContext): void {
         if (!context.enabled()) {
           return nativeToLocaleString.call(this, locales, options);
         }
-        return nativeToLocaleString.call(this, locales ?? context.intlLocale(), withTimeZone(context, options));
+        return nativeToLocaleString.call(this, locales === undefined ? context.intlLocale() : locales, withTimeZone(context, options));
       }
     },
     toLocaleDateString: {
@@ -217,7 +200,7 @@ function patchDate(context: TimePatchContext): void {
         if (!context.enabled()) {
           return nativeToLocaleDateString.call(this, locales, options);
         }
-        return nativeToLocaleDateString.call(this, locales ?? context.intlLocale(), withTimeZone(context, options));
+        return nativeToLocaleDateString.call(this, locales === undefined ? context.intlLocale() : locales, withTimeZone(context, options));
       }
     },
     toLocaleTimeString: {
@@ -226,7 +209,7 @@ function patchDate(context: TimePatchContext): void {
         if (!context.enabled()) {
           return nativeToLocaleTimeString.call(this, locales, options);
         }
-        return nativeToLocaleTimeString.call(this, locales ?? context.intlLocale(), withTimeZone(context, options));
+        return nativeToLocaleTimeString.call(this, locales === undefined ? context.intlLocale() : locales, withTimeZone(context, options));
       }
     }
   });
@@ -294,11 +277,18 @@ function constructDate(context: TimePatchContext, args: unknown[], newTarget: Fu
   return constructDateWithNewTarget(NativeDate, args, newTarget);
 }
 
-function withTimeZone(context: TimePatchContext, options?: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
-  return {
-    ...(options ?? {}),
-    timeZone: options?.timeZone ?? context.timezoneId()
-  };
+function withTimeZone(context: TimePatchContext, options: unknown): Intl.DateTimeFormatOptions {
+  // Preserve native rejection of null and native property access (including
+  // inherited getters and their receiver). An empty target also permits substitution
+  // when a frozen options object has an undefined timeZone.
+  if (options === null) return options as unknown as Intl.DateTimeFormatOptions;
+  const source = options === undefined ? Object.create(null) : Object(options);
+  return new Proxy(Object.create(null), {
+    get(_target, key) {
+      const value = Reflect.get(source, key);
+      return key === "timeZone" && value === undefined ? context.timezoneId() : value;
+    }
+  });
 }
 
 function formatDateTime(context: TimePatchContext, date: Date): string {

@@ -5,7 +5,7 @@
 <title>Ghost Worker CSP regression</title>
 <h1>Ghost Worker CSP regression</h1>
 <p>This page permits Blob Worker entry scripts but forbids Blob script imports.
-It directly loads Ghost's Lite page bundle; no extension or CDP overrides are required.</p>
+It directly loads Ghost's page bundle; no extension or CDP overrides are required.</p>
 <pre id="output">pending</pre>
 <script nonce="ghost-worker-test">
   const workerBody = `
@@ -87,7 +87,6 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
   }
   const before = probe(NativeWorker, untrackedUrl);
   window.__GHOST_BOOTSTRAP_SETTINGS__ = {
-    build: "lite",
     settings: {
       enabled: true, advancedEnabled: false, heliumFlagSync: false,
       siteProfiles: { "*": "tokyo-ja-jp" },
@@ -95,7 +94,7 @@ It directly loads Ghost's Lite page bundle; no extension or CDP overrides are re
     }
   };
 </script>
-<script nonce="ghost-worker-test" src="../dist/lite/page-main.js"></script>
+<script nonce="ghost-worker-test" src="../dist/advanced/page-main.js"></script>
 <script nonce="ghost-worker-test">
   window.regressionDone = (async () => {
     const urls = [];

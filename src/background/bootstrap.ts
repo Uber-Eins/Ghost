@@ -1,76 +1,53 @@
-import { readSessionSalt } from "../shared/session-seed";
-import type { BuildTarget, GhostSettings } from "../shared/types";
+import type { GhostSettings } from "../shared/types";
 
 const PAGE_MAIN_USER_SCRIPT_ID = "ghost-page-main";
 const PAGE_MAIN_FALLBACK_SCRIPT_ID = "ghost-page-main-fallback";
 const LEGACY_BOOTSTRAP_FALLBACK_SCRIPT_ID = "ghost-bootstrap-fallback";
 const PAGE_MAIN_MATCHES = ["http://*/*", "https://*/*", "file:///*"];
 
-export async function refreshContentBootstrap(settings: GhostSettings, build: BuildTarget, sessionSalt: string): Promise<void> {
-  await configureContentBootstrap(settings, build, sessionSalt);
-}
-
-// A newly opened popup gets a fresh extension context after the user changes
-// Chrome's Allow User Scripts toggle. The service worker may still have the
-// old API availability cached, so let that fresh context repair registration.
-export async function repairContentBootstrap(settings: GhostSettings, build: BuildTarget): Promise<boolean> {
-  const sessionSalt = await readSessionSalt();
-  if (!sessionSalt) {
-    throw new Error("Ghost session salt has not been initialized.");
-  }
-  return configureContentBootstrap(settings, build, sessionSalt);
-}
-
-async function configureContentBootstrap(settings: GhostSettings, build: BuildTarget, sessionSalt: string): Promise<boolean> {
-  let userScriptAvailable = false;
-  if (chrome.userScripts?.register) {
-    const script: chrome.userScripts.RegisteredUserScript = {
-      id: PAGE_MAIN_USER_SCRIPT_ID,
-      matches: PAGE_MAIN_MATCHES,
-      allFrames: true,
-      runAt: "document_start",
-      world: "MAIN",
-      js: [
-        { code: bootstrapCode(settings, build, sessionSalt) },
-        { file: "page-main.js" }
-      ]
-    };
-
-    try {
-      const registered = await chrome.userScripts.getScripts({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
-      if (registered.length > 0) {
-        await chrome.userScripts.update([script]);
-      } else {
-        await chrome.userScripts.register([script]);
-      }
-      userScriptAvailable = true;
-    } catch {
-      await unregisterPageMainUserScript();
-    }
+export async function refreshContentBootstrap(settings: GhostSettings, sessionSalt: string): Promise<boolean> {
+  const userScripts = chrome.userScripts;
+  const registered = await pageMainRegistrations(userScripts);
+  if (registered === undefined || !userScripts) {
+    await refreshFallbackContentScript(false);
+    return false;
   }
 
-  // userScripts cannot match related about:/data:/blob: frames. Keep a
-  // related-frame compatibility path only after synchronous protection is
-  // available for normal documents. Without userScripts, do not install the
-  // asynchronous page-world fallback and imply that the page is protected.
-  await refreshFallbackContentScript(userScriptAvailable);
-  return userScriptAvailable;
+  const script: chrome.userScripts.RegisteredUserScript = {
+    id: PAGE_MAIN_USER_SCRIPT_ID,
+    matches: PAGE_MAIN_MATCHES,
+    allFrames: true,
+    runAt: "document_start",
+    world: "MAIN",
+    js: [
+      { code: bootstrapCode(settings, sessionSalt) },
+      { file: "page-main.js" }
+    ]
+  };
+  if (registered.length > 0) {
+    await userScripts.update([script]);
+  } else {
+    await userScripts.register([script]);
+  }
+  await refreshFallbackContentScript(true);
+  return true;
+}
+
+async function pageMainRegistrations(userScripts: typeof chrome.userScripts | undefined) {
+  try {
+    // Without authorization Chromium can hide the API, throw, or reject the call.
+    return await userScripts?.getScripts({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
+  } catch {
+    return undefined;
+  }
 }
 
 export async function isSynchronousContentBootstrapAvailable(): Promise<boolean> {
-  if (!chrome.userScripts?.getScripts) {
-    return false;
-  }
-  try {
-    const scripts = await chrome.userScripts.getScripts({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
-    return scripts.length > 0;
-  } catch {
-    return false;
-  }
+  return Boolean((await pageMainRegistrations(chrome.userScripts))?.length);
 }
 
-function bootstrapCode(settings: GhostSettings, build: BuildTarget, sessionSalt: string): string {
-  const payload = JSON.stringify({ build, settings, sessionSalt });
+function bootstrapCode(settings: GhostSettings, sessionSalt: string): string {
+  const payload = JSON.stringify({ settings, sessionSalt });
   return `(()=>{const p=${payload};try{Object.defineProperty(globalThis,"__GHOST_BOOTSTRAP_SETTINGS__",{value:p,configurable:true});}catch{globalThis.__GHOST_BOOTSTRAP_SETTINGS__=p;}})();`;
 }
 
@@ -116,16 +93,4 @@ export async function openUserScriptsSettingsPage(): Promise<void> {
     ? `chrome://extensions/?id=${chrome.runtime.id}`
     : "chrome://extensions/";
   await chrome.tabs.create({ url });
-}
-
-async function unregisterPageMainUserScript(): Promise<void> {
-  if (!chrome.userScripts?.unregister) {
-    return;
-  }
-
-  try {
-    await chrome.userScripts.unregister({ ids: [PAGE_MAIN_USER_SCRIPT_ID] });
-  } catch {
-    // The user script may not be registered, or the API may be unavailable in this browser.
-  }
 }

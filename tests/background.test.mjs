@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
-import { DEFAULT_SETTINGS, normalizeSettings, resolveProfile } from "../dist/test/test-api.js";
+import { DEFAULT_SETTINGS, effectiveGeolocation, normalizeSettings, PRESET_PROFILES, resolveProfile } from "../dist/test/test-api.js";
 
-const background = readFileSync(new URL("../dist/test/background-advanced.js", import.meta.url), "utf8");
+const background = readFileSync(new URL("../dist/advanced/background.js", import.meta.url), "utf8");
 
 function deferred() {
   let resolve;
@@ -27,7 +27,7 @@ async function promptly(promise) {
   }
 }
 
-function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, session = {} } = {}) {
+function harness({ blockDebugger = false, blockMessages = false, blockSessionRules = false, userScriptsAuthorized = true, fetch, session = {} } = {}) {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, heliumFlagSync: false });
   const local = { "ghost.settings": settings };
   const events = {};
@@ -43,6 +43,9 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
   let dynamicRules = [];
   let sessionRules = [];
   let failDynamic = false;
+  let nextDynamicGate;
+  let rejectUserScriptRead = false;
+  let failUserScriptWrite = false;
   const attached = new Set();
   const event = name => ({
     addListener(listener) { (events[name] ??= []).push(listener); }
@@ -54,6 +57,21 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
       Object.assign(data, structuredClone(value));
     }
   });
+  const userScriptsApi = {
+    async getScripts() {
+      if (rejectUserScriptRead) throw new Error("User Scripts access is not allowed");
+      return structuredClone(userScripts);
+    },
+    async register(scripts) { await this.update(scripts); },
+    async update(scripts) {
+      if (failUserScriptWrite) {
+        failUserScriptWrite = false;
+        throw new Error("forced bootstrap write failure");
+      }
+      userScripts = structuredClone(scripts);
+    },
+    async unregister() { calls.push({ type: "unregister-user-script" }); userScripts = []; }
+  };
   const chrome = {
     storage: { local: storageArea(local), session: storageArea(session) },
     runtime: {
@@ -79,12 +97,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
         }
       }
     },
-    userScripts: {
-      async getScripts() { return structuredClone(userScripts); },
-      async register(scripts) { userScripts = structuredClone(scripts); },
-      async update(scripts) { userScripts = structuredClone(scripts); },
-      async unregister() { userScripts = []; }
-    },
+    get userScripts() { return userScriptsAuthorized ? userScriptsApi : undefined; },
     scripting: {
       async getRegisteredContentScripts() { return structuredClone(contentScripts); },
       async registerContentScripts(scripts) { contentScripts = structuredClone(scripts); },
@@ -128,6 +141,9 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
       },
       async getDynamicRules() { return structuredClone(dynamicRules); },
       async updateDynamicRules({ removeRuleIds = [], addRules = [] }) {
+        const pause = nextDynamicGate;
+        nextDynamicGate = undefined;
+        if (pause) await pause();
         if (failDynamic) {
           failDynamic = false;
           throw new Error("forced global header failure");
@@ -138,16 +154,23 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     }
   };
   const context = vm.createContext({
-    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto,
+    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto, fetch, AbortController, structuredClone,
     navigator: { userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" },
     console: { error(...args) { errors.push(args.map(String).join(" ")); } }
   });
-  vm.runInContext(background, context, { filename: "background-advanced.js" });
+  vm.runInContext(background, context, { filename: "background.js" });
   return {
     local, session, calls, errors, attached, blocked: blocked.promise, notified: notified.promise,
     initialized: initialized.promise, detached: detached.promise,
     release() { gate.resolve(); },
     failNextGlobalUpdate() { failDynamic = true; },
+    gateNextGlobalUpdate(pause) { nextDynamicGate = pause; },
+    allowUserScripts() { userScriptsAuthorized = true; },
+    revokeUserScriptsAccess() { rejectUserScriptRead = true; },
+    failNextUserScriptWrite() { failUserScriptWrite = true; },
+    get dynamicRules() { return structuredClone(dynamicRules); },
+    get userScripts() { return structuredClone(userScripts); },
+    get contentScripts() { return structuredClone(contentScripts); },
     fire(name) { for (const listener of events[name] ?? []) listener(); },
     request(message, sender = {}) {
       return new Promise(resolve => {
@@ -170,7 +193,7 @@ test("settings save and a subsequent save do not wait for a slow tab debugger", 
     assert.equal(next.ok, true);
     assert.equal(h.local["ghost.settings"].enabled, false);
     assert.equal(h.bootstrap.settings.enabled, false, "the early document payload is updated before success");
-    assert.ok(h.calls.some(call => call.type === "global-headers"), "global headers are applied before success");
+    assert.deepEqual(h.dynamicRules, []);
     await promptly(h.notified);
   } finally {
     h.release();
@@ -277,6 +300,25 @@ test("a pending per-tab header update does not block global protection commits",
 });
 
 
+test("a profile reply uses the latest settings if a save completes during its tab header update", async () => {
+  const h = harness({ blockSessionRules: true });
+  await promptly(h.initialized);
+  // IPv6 uses tab-scoped rules, unlike the ordinary tab from startup fan-out.
+  const url = "http://[::1]:8765/";
+  const pending = h.request({ type: "resolveProfile", url }, { url, frameId: 0, tab: { id: 8, url } });
+  try {
+    await promptly(h.blocked);
+    const save = await promptly(h.request({ type: "setGlobalEnabled", enabled: false }));
+    assert.equal(save.ok, true, save.error);
+  } finally {
+    h.release();
+  }
+  const reply = await promptly(pending);
+  assert.equal(reply.ok, true, reply.error);
+  assert.equal(reply.value.enabled, false);
+  assert.equal(reply.value.reason, "global-disabled");
+});
+
 test("session noise salt is created once and reused across worker restarts and settings saves", async () => {
   const first = harness();
   await promptly(first.initialized);
@@ -288,7 +330,7 @@ test("session noise salt is created once and reused across worker restarts and s
     { frameId: 0, url: "https://example.com/", tab: { id: 7, url: "https://example.com/" } }
   ));
   assert.equal(response.ok, true);
-  const synchronous = resolveProfile("https://example.com/", first.bootstrap.settings, "advanced", Date.now(), "https://example.com/", salt);
+  const synchronous = resolveProfile("https://example.com/", first.bootstrap.settings, Date.now(), "https://example.com/", salt);
   assert.equal(response.value.seed, synchronous.seed);
   assert.equal(JSON.stringify(response).includes(salt), false);
   await promptly(first.request({ type: "setGlobalEnabled", enabled: false }));
@@ -307,4 +349,205 @@ test("session noise salt is created once and reused across worker restarts and s
   assert.deepEqual(first.errors, []);
   assert.deepEqual(restarted.errors, []);
   assert.deepEqual(nextSession.errors, []);
+});
+
+test("CDP and the synchronous bootstrap compute the same session-jittered coordinates", async () => {
+  const h = harness({ blockDebugger: true });
+  try {
+    await promptly(h.blocked);
+    const { settings, sessionSalt } = h.bootstrap;
+    const { profile, seed } = resolveProfile("https://example.com/", settings, Date.now(), undefined, sessionSalt);
+    const params = structuredClone(h.calls.find(call => call.method === "Emulation.setGeolocationOverride").params);
+    assert.deepEqual(params, effectiveGeolocation(profile, seed));
+    assert.notEqual(params.latitude, profile.latitude);
+    assert.notEqual(params.longitude, profile.longitude);
+  } finally {
+    h.release();
+  }
+});
+
+test("background recheck sees newly granted User Scripts access and uses queued, current settings", async () => {
+  const h = harness({ userScriptsAuthorized: false });
+  await promptly(h.initialized);
+  assert.deepEqual(h.userScripts, []);
+  assert.deepEqual(h.contentScripts, []);
+  assert.equal((await h.request({ type: "getPopupState", url: "https://example.com/" })).value.earlyBootstrapAvailable, false);
+  assert.equal((await h.request({ type: "recheckContentBootstrap" })).value, false);
+  h.allowUserScripts();
+  const save = h.request({ type: "setGlobalEnabled", enabled: false });
+  const recheck = h.request({ type: "recheckContentBootstrap", settings: { enabled: true } });
+  assert.equal((await promptly(save)).ok, true);
+  assert.equal((await promptly(recheck)).value, true);
+  assert.equal(h.bootstrap.settings.enabled, false);
+  assert.match(h.bootstrap.sessionSalt, /^[a-f0-9]{32}$/);
+  assert.equal(h.userScripts[0].world, "MAIN");
+  assert.equal(h.userScripts[0].runAt, "document_start");
+  assert.equal(h.userScripts[0].js[1].file, "page-main.js");
+});
+
+test("an asynchronous User Scripts authorization rejection leaves saves working but unprotected", async () => {
+  const h = harness();
+  const url = "https://example.com/";
+  await promptly(h.initialized);
+  assert.equal((await promptly(h.request({ type: "getPopupState", url }))).value.earlyBootstrapAvailable, true);
+  h.revokeUserScriptsAccess();
+
+  const save = await promptly(h.request({ type: "setSiteProfile", siteKey: "example.com", profileId: "tokyo-ja-jp" }));
+  assert.equal(save.ok, true, save.error);
+  assert.equal(h.local["ghost.settings"].siteProfiles["example.com"], "tokyo-ja-jp");
+  assert.deepEqual(h.contentScripts, []);
+  const popup = await promptly(h.request({ type: "getPopupState", url }));
+  assert.equal(popup.ok, true, popup.error);
+  assert.equal(popup.value.earlyBootstrapAvailable, false);
+});
+
+test("authorized bootstrap write failure rejects save and preserves the previous script", async () => {
+  for (const initialAccess of [true, false]) {
+    const h = harness({ userScriptsAuthorized: initialAccess });
+    await promptly(h.initialized);
+    const previous = h.userScripts;
+    h.allowUserScripts();
+    h.failNextUserScriptWrite();
+    const result = await promptly(h.request({ type: "setGlobalEnabled", enabled: false }));
+    assert.equal(result.ok, false);
+    assert.equal(h.local["ghost.settings"].enabled, true);
+    assert.equal(h.bootstrap.settings.enabled, true);
+    assert.equal(h.calls.some(call => call.type === "unregister-user-script"), false);
+    if (initialAccess) assert.deepEqual(h.userScripts, previous);
+  }
+});
+
+const ipLocation = {
+  ip: "203.0.113.231", timezone: "Asia/Taipei", latitude: 25.033, longitude: 121.5654,
+  countryCode: "TW", country: "Taiwan", region: "Taipei", city: "Taipei"
+};
+const locationResponse = () => ({ ok: true, json: async () => ipLocation });
+
+test("enabling automatic location fetches and applies the sanitized cache, which a stale options save cannot overwrite", async () => {
+  const requests = [];
+  const h = harness({ fetch: async url => { requests.push(url); return locationResponse(); } });
+  await promptly(h.initialized);
+  h.fire("startup");
+  const disabled = await promptly(h.request({ type: "options.refreshAutomaticLocation" }));
+  assert.equal(disabled.ok, true);
+  assert.deepEqual(requests, []);
+  const staleOptions = { ...h.local["ghost.settings"], automaticLocationEnabled: true };
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: staleOptions }))).ok, true);
+  const refreshed = await promptly(h.request({ type: "options.refreshAutomaticLocation" }));
+  assert.equal(refreshed.ok, true, refreshed.error);
+  assert.equal(requests[0], "https://my.ippure.com/v1/info");
+  const saved = await promptly(h.request({
+    type: "options.saveState", settings: { ...staleOptions, automaticLocationEnabled: false, advancedEnabled: false }
+  }));
+  assert.equal(saved.value.automaticLocation.timezoneId, "Asia/Taipei", "options cannot replace background-owned data");
+  const cache = structuredClone(refreshed.value.automaticLocation);
+  assert.deepEqual(h.local["ghost.settings"].automaticLocation, cache);
+  assert.equal(JSON.stringify(h.local).includes(ipLocation.ip), false);
+
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: {
+    ...staleOptions, advancedEnabled: false
+  } }))).ok, true);
+  const reply = await promptly(h.request({ type: "resolveProfile", url: "https://example.com/" }, { url: "https://example.com/" }));
+  const { timezoneId, latitude, longitude } = reply.value.profile;
+  assert.deepEqual({ timezoneId, latitude, longitude }, { timezoneId: "Asia/Taipei", latitude: 25.033, longitude: 121.5654 });
+  assert.equal(h.bootstrap.settings.automaticLocation.timezoneId, "Asia/Taipei");
+});
+
+test("a location result queues behind a failing save and merges into the rolled-back settings", async () => {
+  const fetching = deferred(), response = deferred(), applying = deferred(), release = deferred();
+  const h = harness({ fetch: async () => { fetching.resolve(); return response.promise; } });
+  await promptly(h.initialized);
+  assert.equal((await promptly(h.request({ type: "options.saveState", settings: {
+    ...h.local["ghost.settings"], automaticLocationEnabled: true
+  } }))).ok, true);
+  const location = h.request({ type: "options.refreshAutomaticLocation" });
+  await promptly(fetching.promise);
+  h.failNextGlobalUpdate();
+  h.gateNextGlobalUpdate(async () => { applying.resolve(); await release.promise; });
+  const save = h.request({ type: "setGlobalEnabled", enabled: false });
+  try {
+    await promptly(applying.promise);
+    response.resolve(locationResponse());
+    await new Promise(setImmediate);
+    assert.equal(h.local["ghost.settings"].automaticLocation, null);
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await promptly(save)).ok, false);
+  const refreshed = await promptly(location);
+  assert.equal(refreshed.ok, true, refreshed.error);
+  assert.equal(h.local["ghost.settings"].enabled, true);
+  assert.equal(h.bootstrap.settings.enabled, true);
+  assert.equal(h.bootstrap.settings.automaticLocation.timezoneId, "Asia/Taipei");
+});
+
+test("a settings reply waits for its own DNR update and queued edits start from the committed state", async () => {
+  const h = harness();
+  await promptly(h.initialized);
+  assert.ok(h.dynamicRules.some(rule => rule.action.type === "modifyHeaders"));
+  const updating = deferred(), release = deferred();
+  h.gateNextGlobalUpdate(async () => { updating.resolve(); await release.promise; });
+  let replied = false;
+  const disable = h.request({ type: "setGlobalEnabled", enabled: false }).then(result => { replied = true; return result; });
+  try {
+    await promptly(updating.promise);
+    await new Promise(setImmediate);
+    assert.equal(replied, false);
+    assert.ok(h.dynamicRules.some(rule => rule.action.type === "modifyHeaders"));
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await promptly(disable)).ok, true);
+  assert.deepEqual(h.dynamicRules, []);
+  const [a, b] = await promptly(Promise.all([
+    h.request({ type: "setSiteProfile", siteKey: "a.example", profileId: "los-angeles-en-us" }),
+    h.request({ type: "setSiteProfile", siteKey: "b.example", profileId: "tokyo-ja-jp" })
+  ]));
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(h.local["ghost.settings"].siteProfiles["a.example"], "los-angeles-en-us");
+  assert.equal(h.local["ghost.settings"].siteProfiles["b.example"], "tokyo-ja-jp");
+});
+
+test("the registered bootstrap loads the shipped page bundle and applies its keyboard layout", async () => {
+  const h = harness();
+  const profile = { ...PRESET_PROFILES[0], id: "test-keyboard", keyboardLayout: "de" };
+  const saved = await promptly(h.request({ type: "options.saveState", settings: {
+    ...h.local["ghost.settings"], customProfiles: [profile], siteProfiles: { "*": profile.id }
+  } }));
+  assert.equal(saved.ok, true);
+  const broadcasts = [];
+  const context = vm.createContext({ crypto: webcrypto, URL, postMessage: data => broadcasts.push(structuredClone(data)) });
+  vm.runInContext(`
+    var window = globalThis, top = window, parent = window;
+    var document = { referrer: '' }, location = { href: 'https://example.com/' };
+    var history = {}, addEventListener = () => {}, setTimeout = () => 0;
+    var MessageChannel = class { constructor() { this.port1 = { start() {} }; this.port2 = {}; } };
+    var backing = new WeakMap();
+    var KeyboardLayoutMap = class KeyboardLayoutMap {
+      constructor(entries) { backing.set(this, new Map(entries)); }
+      keys() { return backing.get(this).keys(); }
+      get(key) { return backing.get(this).get(key); }
+    };
+    var nativeLayout = new KeyboardLayoutMap([['KeyY', 'host-y']]);
+    var Keyboard = class Keyboard {
+      getLayoutMap() {
+        if (this !== keyboard) throw new TypeError('Illegal invocation');
+        return Promise.resolve(nativeLayout);
+      }
+    };
+    var keyboard = new Keyboard(), Navigator = class Navigator { get keyboard() { return keyboard; } };
+    var navigator = new Navigator();
+  `, context);
+  for (const script of h.userScripts[0].js) {
+    const source = script.code ?? readFileSync(new URL(`../dist/advanced/${script.file}`, import.meta.url), "utf8");
+    vm.runInContext(source, context);
+  }
+  const layout = await vm.runInContext("navigator.keyboard.getLayoutMap()", context);
+  assert.ok(layout instanceof vm.runInContext("KeyboardLayoutMap", context));
+  assert.equal(layout.get("KeyY"), "z");
+  assert.equal(broadcasts.length, 1);
+  assert.match(broadcasts[0].nonce, /^[a-f0-9]{32}$/);
+  assert.deepEqual(broadcasts[0], { channel: "ghost-profile-v1", type: "connect", nonce: broadcasts[0].nonce });
+  assert.equal(vm.runInContext("'__GHOST_BOOTSTRAP_SETTINGS__' in window", context), false);
 });

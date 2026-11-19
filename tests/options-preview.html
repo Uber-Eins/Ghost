@@ -12,7 +12,7 @@
 
     const query = new URLSearchParams(location.search);
     const language = query.get("lang") === "zh_CN" ? "zh_CN" : "en";
-    const base = new URL("../dist/lite/", location.href);
+    const base = new URL("../dist/advanced/", location.href);
     const messages = await fetch(new URL(`_locales/${language}/messages.json`, base)).then((response) => response.json());
     const profile = {
       ...structuredClone(PRESET_PROFILES[0]), id: "preview-windows", label: "Preview / Windows",
@@ -31,12 +31,12 @@
     };
     window.chrome = {
       runtime: {
-        getManifest: () => ({ version: "0.1.0", permissions: [] }),
+        getManifest: () => ({ version: "0.1.0", permissions: ["debugger"] }),
         getPlatformInfo: (callback) => callback({ os: "win", arch: "x86-64", nacl_arch: "x86-64" }),
         sendMessage: (request, callback) => {
           if (request.type === "options.saveState") settings = structuredClone(request.settings);
           if (request.type === "options.resetState") settings = structuredClone(DEFAULT_SETTINGS);
-          callback({ ok: true, value: settings });
+          callback({ ok: true, value: request.type === "recheckContentBootstrap" ? true : settings });
         }
       },
       storage: { local: storage, session: storage, onChanged: { addListener: (listener) => listeners.add(listener), removeListener: (listener) => listeners.delete(listener) } },

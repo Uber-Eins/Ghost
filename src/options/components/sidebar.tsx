@@ -1,6 +1,5 @@
 import * as React from "react";
 import type { LucideIcon } from "lucide-react";
-import { Badge } from "./ui/badge";
 import { t } from "../../shared/i18n";
 
 export interface NavItem {
@@ -12,14 +11,12 @@ export interface NavItem {
 export function Sidebar({
   items,
   activeId,
-  isAdvancedBuild,
   version,
   protectionAvailable,
   onNavigate
 }: {
   items: NavItem[];
   activeId: string;
-  isAdvancedBuild: boolean;
   version: string;
   protectionAvailable: boolean | null;
   onNavigate: (id: string) => void;
@@ -53,9 +50,6 @@ export function Sidebar({
       <div className="sidebar-foot mt-auto flex flex-col gap-3 px-2 pt-6">
         <StatusPill available={protectionAvailable} />
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Badge variant={isAdvancedBuild ? "success" : "outline"}>
-            {isAdvancedBuild ? t("buildAdvancedLabel") : t("buildLiteLabel")}
-          </Badge>
           <span className="font-mono">v{version}</span>
         </div>
       </div>

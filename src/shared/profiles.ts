@@ -1,5 +1,13 @@
-import { stableIndex } from "./hash";
+import { stableIndex, stableNumber } from "./hash";
 import type { Profile } from "./types";
+
+export function effectiveGeolocation(profile: Profile, seed: string) {
+  return {
+    latitude: Math.max(-90, Math.min(90, profile.latitude + stableNumber(`${seed}:geo:lat`, -0.00015, 0.00015))),
+    longitude: Math.max(-180, Math.min(180, profile.longitude + stableNumber(`${seed}:geo:lon`, -0.00015, 0.00015))),
+    accuracy: profile.accuracy
+  };
+}
 
 export interface UserAgentBrandVersion {
   brand: string;

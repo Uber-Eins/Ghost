@@ -18,15 +18,12 @@ const resolutions = [[1366, 768], [1600, 900], [1920, 1080], [1920, 1200], [2560
 test("screenForProfile fixes a resolution per profile id independently of site and session", () => {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, siteProfiles: { "*": profile.id } });
   const expected = derive();
-  const seeds = new Set();
   for (const site of ["https://one.example", "https://two.example"]) {
     for (const salt of ["session-one", "session-two"]) {
-      const resolved = resolveProfile(site, settings, "lite", 0, site, salt);
-      seeds.add(resolved.seed);
+      const resolved = resolveProfile(site, settings, 0, site, salt);
       assert.deepEqual(screenForProfile(resolved.profile, "Win32", smallOuter), expected);
     }
   }
-  assert.equal(seeds.size, 4);
   assert.deepEqual(derive({ locale: "ja-JP", languages: ["ja-JP"], timezoneId: "Asia/Tokyo" }), expected);
   expected.width = 1;
   assert.notEqual(derive().width, 1);

@@ -1,1 +1,1 @@
-export { buildHeaderRulesForTesting, buildTabHeaderRulesForTesting, validateHeaderRules } from "./background/dnr";
+export { buildHeaderRulesForTesting, buildTabHeaderRulesForTesting } from "./background/dnr";
