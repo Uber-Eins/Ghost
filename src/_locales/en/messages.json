@@ -6,7 +6,7 @@
   "customResolution": { "message": "Custom..." },
   "screenWidth": { "message": "Screen width" },
   "screenHeight": { "message": "Screen height" },
-  "screenResolutionHint": { "message": "Physical pixels. Reported to sites divided by the device pixel ratio. A window larger than the screen is a contradiction." },
+  "screenResolutionHint": { "message": "Physical pixels. Reported to sites divided by the device pixel ratio. Automatic only applies while Ghost reports a Windows platform; a chosen resolution always applies. A window larger than the screen is a contradiction." },
   "windowsPlatformOnly": { "message": "Only applies while Ghost reports a Windows platform." },
   "keyboardLayout": { "message": "Keyboard layout" },
   "keyboardUS": { "message": "US" },

@@ -6,7 +6,7 @@
   "customResolution": { "message": "自定义..." },
   "screenWidth": { "message": "屏幕宽度" },
   "screenHeight": { "message": "屏幕高度" },
-  "screenResolutionHint": { "message": "物理像素。向网站报告的值会除以设备像素比。窗口大于屏幕会导致信息矛盾。" },
+  "screenResolutionHint": { "message": "物理像素。向网站报告的值会除以设备像素比。自动仅在 Ghost 报告 Windows 平台时生效；手动选择的分辨率始终生效。窗口大于屏幕会导致信息矛盾。" },
   "windowsPlatformOnly": { "message": "仅在 Ghost 报告 Windows 平台时生效。" },
   "keyboardLayout": { "message": "键盘布局" },
   "keyboardUS": { "message": "美式" },

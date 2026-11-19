@@ -60,11 +60,22 @@ test("screenForProfile keeps work area within bounds and uses the reported Windo
   assert.equal(derive({ platform: "Linux x86_64", platformVersion: "13" }).height - derive({ platform: "Linux x86_64", platformVersion: "13" }).availHeight, 48);
 });
 
-test("screenForProfile leaves non-Windows and native-UA profiles native", () => {
+test("screenForProfile leaves automatic non-Windows and native-UA profiles native", () => {
   for (const platform of ["Linux x86_64", "MacIntel", "iPhone", "", "unknown"]) {
     assert.equal(screenForProfile(profile, platform, smallOuter), null);
   }
   assert.equal(derive({ uaMode: "native" }), null);
+});
+
+test("screenForProfile applies an explicit resolution on any reported platform, without a taskbar outside Windows", () => {
+  const fixed = { ...profile, screenResolution: { width: 1920, height: 1080 } };
+  for (const platform of ["Linux x86_64", "MacIntel", ""]) {
+    assert.deepEqual(screenForProfile(fixed, platform, smallOuter, 1),
+      { width: 1920, height: 1080, availWidth: 1920, availHeight: 1080, availLeft: 0, availTop: 0 });
+  }
+  assert.deepEqual(screenForProfile({ ...fixed, uaMode: "native" }, "Win32", smallOuter, 2),
+    { width: 960, height: 540, availWidth: 960, availHeight: 540, availLeft: 0, availTop: 0 });
+  assert.equal(screenForProfile(fixed, "Win32", smallOuter, 1).availHeight < 1080, true);
 });
 
 const screen = { width: 1920, height: 1080 };
@@ -188,14 +199,28 @@ test("patchScreen holds dimensions through resize and seed/site updates, refresh
   assert.equal(h.run("screen.height - screen.availHeight"), 48);
 });
 
-test("patchScreen leaves dimensions native for delegated, native-UA and non-Windows profiles but still hides multiple screens", () => {
-  for (const setup of ["state.uaSpoofingEnabled = false", "state.profile = { ...state.profile, uaMode: 'native' }", "navigator.platform = 'Linux x86_64'", "navigator.platform = 'MacIntel'"]) {
+test("patchScreen leaves automatic dimensions native for native-UA and non-Windows platforms but still hides multiple screens", () => {
+  for (const setup of ["state.profile = { ...state.profile, uaMode: 'native' }", "navigator.platform = 'Linux x86_64'", "navigator.platform = 'MacIntel'"]) {
     const h = harness();
     h.run(`${setup}; refreshScreenProfile()`);
     assert.equal(h.run("screen.width"), 5000, setup);
     assert.equal(h.run("screen.isExtended"), false, setup);
+    assert.equal(h.run("screen.availLeft"), 0, setup);
+    assert.equal(h.run("screen.availTop"), 0, setup);
     assert.equal(h.run("matchMedia('(device-width: 5000px)').media"), "(device-width: 5000px)");
   }
+  const native = harness(false);
+  native.run("navigator.platform = 'Linux x86_64'; refreshScreenProfile()");
+  assert.equal(native.run("screen.availLeft"), 5000);
+  assert.equal(native.run("screen.availTop"), 100);
+});
+
+test("patchScreen applies an explicit resolution when the User-Agent is delegated and the platform is Linux", () => {
+  const h = harness();
+  h.run("state.uaSpoofingEnabled = false; navigator.platform = 'Linux x86_64'; state.profile = { ...state.profile, screenResolution: { width: 1920, height: 1080 } }; refreshScreenProfile()");
+  assert.equal(h.run("screen.width * devicePixelRatio"), 1920);
+  assert.equal(h.run("screen.availHeight"), h.run("screen.height"));
+  assert.equal(h.run("screen.availLeft"), 0);
 });
 
 test("patchScreen rewrites true/false media checks, preserves original media text and untouched queries", () => {

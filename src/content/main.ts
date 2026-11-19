@@ -844,7 +844,8 @@ function patchScreen(realm: Window & typeof globalThis): void {
       return { width, height, availWidth, availHeight, availLeft, availTop };
     }
     if (parentIdentity) return parentIdentity.screen();
-    if (!state.uaSpoofingEnabled || state.profile.uaMode === "native") return null;
+    // The derivation already follows the platform this document reports (which
+    // is native when the User-Agent is delegated); explicit sizes always apply.
     return screen;
   };
   for (const property of ["width", "height", "availWidth", "availHeight", "availLeft", "availTop", "isExtended"] as const) {
@@ -862,7 +863,14 @@ function patchScreen(realm: Window & typeof globalThis): void {
           if (realm !== window) return (window.screen as Screen & { isExtended?: boolean }).isExtended ?? nativeValue;
           return parentIdentity ? parentIdentity.isExtended() ?? nativeValue : state.singleScreenEnabled ? false : nativeValue;
         }
-        return reportedScreen()?.[property] ?? nativeValue;
+        const reported = reportedScreen()?.[property];
+        if (reported !== undefined) return reported;
+        // A native multi-monitor layout shows through availLeft/availTop (for
+        // example 1920 for a screen right of a 1920-wide one); a single screen
+        // always starts at the origin.
+        if ((property === "availLeft" || property === "availTop") && state.enabled
+          && realm === window && !parentIdentity && state.singleScreenEnabled) return 0;
+        return nativeValue;
       }), nativeGetter)
     });
   }

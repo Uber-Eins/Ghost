@@ -41,14 +41,18 @@ function validDpr(dpr: number): number {
 }
 
 export function screenForProfile(profile: Profile, reportedPlatform: string, outer: { width: number; height: number }, devicePixelRatio = 1): ProfileScreen | null {
-  if (profile.uaMode === "native" || !/^Win/i.test(reportedPlatform)) return null;
+  const fixed = normalizeScreenResolution(profile.screenResolution);
+  const windows = profile.uaMode !== "native" && /^Win/i.test(reportedPlatform);
+  // Automatic resolutions model a Windows machine. An explicit resolution is
+  // the user's choice and applies whatever platform is reported.
+  if (fixed === "auto" && !windows) return null;
   const dpr = validDpr(devicePixelRatio);
   const platformVersion = normalizedPlatformVersionOverride(profile.platformVersion)
     ?? userAgentMetadataForProfile(profile)?.platformVersion ?? "10.0.0";
   // Unconfirmed default taskbar heights at 100% scaling: Windows 11 uses 48
-  // CSS px, Windows 10 uses 40. Custom taskbar sizes/auto-hide are not modelled.
-  const taskbar = Number(platformVersion.split(".")[0]) >= 13 ? 48 : 40;
-  const fixed = normalizeScreenResolution(profile.screenResolution);
+  // CSS px, Windows 10 uses 40. Custom taskbar sizes/auto-hide are not modelled;
+  // other platforms report the full height (panel and dock sizes vary).
+  const taskbar = !windows ? 0 : Number(platformVersion.split(".")[0]) >= 13 ? 48 : 40;
   const panel = fixed === "auto" ? automaticScreenPanel(profile, dpr) : [fixed.width, fixed.height];
   let [width, height] = panel.map((size) => Math.round(size / dpr));
   const fits = (size: readonly [number, number]): boolean => size[0] >= outer.width && size[1] - taskbar >= outer.height;

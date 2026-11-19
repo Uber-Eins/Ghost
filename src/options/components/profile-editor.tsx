@@ -316,7 +316,7 @@ function DisplayInputFields({ draft, onDraftChange }: { draft: Profile; onDraftC
   };
   return (
     <div className="grid gap-4 md:grid-cols-3">
-      <Field label={t("screenResolution")} hint={`${t("screenResolutionHint")} ${t("windowsPlatformOnly")}`}>
+      <Field label={t("screenResolution")} hint={t("screenResolutionHint")}>
         <Select value={customScreen ? "custom" : panelValue} onValueChange={(value) => {
           setCustomScreen(value === "custom");
           if (value === "auto") onDraftChange({ ...draft, screenResolution: "auto" });
