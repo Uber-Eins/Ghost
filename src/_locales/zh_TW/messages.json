@@ -24,6 +24,9 @@
   "mediaDeviceListSubtitle": { "message": "未取得攝影機或麥克風權限的網站會看到一個麥克風、一個攝影機和一個喇叭。" },
   "singleScreen": { "message": "回報單一螢幕" },
   "singleScreenSubtitle": { "message": "網站看到的 screen.isExtended 為 false。" },
+  "uiLanguage": { "message": "介面語言" },
+  "uiLanguageSubtitle": { "message": "Ghost 彈出式視窗與設定頁面使用的語言。" },
+  "uiLanguageAuto": { "message": "自動（跟隨瀏覽器）" },
   "extensionName": {
     "message": "Ghost 隱私"
   },

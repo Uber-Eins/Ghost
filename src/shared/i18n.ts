@@ -25,6 +25,9 @@ const MESSAGES = {
     mediaDeviceListSubtitle: "Sites without camera or microphone permission see one microphone, camera and speaker.",
     singleScreen: "Report a single screen",
     singleScreenSubtitle: "Sites see screen.isExtended as false.",
+    uiLanguage: "Interface language",
+    uiLanguageSubtitle: "Language of Ghost's popup and settings pages.",
+    uiLanguageAuto: "Auto (browser language)",
     acceptLanguage: "Accept-Language",
     accuracy: "Accuracy",
     actions: "Actions",
@@ -245,6 +248,9 @@ const MESSAGES = {
     mediaDeviceListSubtitle: "未取得攝影機或麥克風權限的網站會看到一個麥克風、一個攝影機和一個喇叭。",
     singleScreen: "回報單一螢幕",
     singleScreenSubtitle: "網站看到的 screen.isExtended 為 false。",
+    uiLanguage: "介面語言",
+    uiLanguageSubtitle: "Ghost 彈出式視窗與設定頁面使用的語言。",
+    uiLanguageAuto: "自動（跟隨瀏覽器）",
     acceptLanguage: "Accept-Language",
     accuracy: "精確度",
     actions: "操作",
@@ -443,14 +449,36 @@ const MESSAGES = {
 
 type Language = keyof typeof MESSAGES;
 export type MessageKey = keyof typeof MESSAGES.en;
+export type UiLanguagePreference = "auto" | Language;
+
+const UI_LANGUAGE_KEY = "ghostUiLanguage";
+let uiLanguagePreference: UiLanguagePreference = "auto";
+
+export function normalizeUiLanguagePreference(value: unknown): UiLanguagePreference {
+  return value === "en" || value === "zh-TW" ? value : "auto";
+}
+
+// Read once before the first render; t() stays synchronous.
+export async function loadUiLanguagePreference(): Promise<UiLanguagePreference> {
+  const stored = await chrome.storage.local.get(UI_LANGUAGE_KEY);
+  uiLanguagePreference = normalizeUiLanguagePreference(stored[UI_LANGUAGE_KEY]);
+  return uiLanguagePreference;
+}
+
+export async function saveUiLanguagePreference(preference: UiLanguagePreference): Promise<void> {
+  await chrome.storage.local.set({ [UI_LANGUAGE_KEY]: preference });
+  uiLanguagePreference = preference;
+}
 
 export function currentUiLanguage(): Language {
-  const language = chromeUiLanguage().toLowerCase();
-  return language.startsWith("zh") ? "zh-TW" : "en";
+  if (uiLanguagePreference !== "auto") {
+    return uiLanguagePreference;
+  }
+  return chromeUiLanguage().toLowerCase().startsWith("zh") ? "zh-TW" : "en";
 }
 
 export function t(key: MessageKey): string {
-  return chromeMessage(key) ?? MESSAGES[currentUiLanguage()][key] ?? MESSAGES.en[key];
+  return MESSAGES[currentUiLanguage()][key] ?? MESSAGES.en[key];
 }
 
 export function localizeDocument(): void {
@@ -487,12 +515,4 @@ function chromeUiLanguage(): string {
     return chrome.i18n.getUILanguage();
   }
   return navigator.language;
-}
-
-function chromeMessage(key: MessageKey): string | undefined {
-  if (typeof chrome === "undefined" || !chrome.i18n?.getMessage) {
-    return undefined;
-  }
-  const message = chrome.i18n.getMessage(key);
-  return message || undefined;
 }

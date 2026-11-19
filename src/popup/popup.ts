@@ -1,4 +1,4 @@
-import { localizeDocument, t } from "../shared/i18n";
+import { loadUiLanguagePreference, localizeDocument, t } from "../shared/i18n";
 import { FINGERPRINT_TEST_URL } from "../shared/fingerprint-test";
 import { applyHeliumFlagDetection, detectHeliumFlags, sameHeliumSurfaces } from "../shared/helium-detect";
 import { utcOffsetLabel, utcOffsetMinutes } from "../shared/timezone";
@@ -39,6 +39,7 @@ let currentState: PopupState | null = null;
 void initialize().catch(showError);
 
 async function initialize(): Promise<void> {
+  await loadUiLanguagePreference().catch(() => undefined);
   localizeDocument();
   elements.version.textContent = `v${chrome.runtime.getManifest().version}`;
   currentState = await loadAndRepairPopupState();

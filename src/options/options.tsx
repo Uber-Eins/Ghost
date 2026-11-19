@@ -58,7 +58,7 @@ import {
 } from "../shared/helium-detect";
 import { isSynchronousContentBootstrapAvailable, openUserScriptsSettingsPage } from "../background/bootstrap";
 import { cloneProfile, allProfiles, PRESET_PROFILE_IDS, PRESET_PROFILES } from "../shared/profiles";
-import { localizeDocument, t } from "../shared/i18n";
+import { loadUiLanguagePreference, localizeDocument, normalizeUiLanguagePreference, saveUiLanguagePreference, t, type UiLanguagePreference } from "../shared/i18n";
 import { DEFAULT_SITE_RULE, normalizeExclusionRule, normalizeSiteRuleKey } from "../shared/site";
 import { normalizeSettings, profileIdForSiteKey, SETTINGS_LIMITS, STORAGE_KEY } from "../shared/storage";
 import type { GhostSettings, Profile, RuntimeRequest, RuntimeResponse } from "../shared/types";
@@ -69,9 +69,10 @@ type ToastState = { id: number; message: string; tone: ToastTone };
 type ConfirmKind = "reset" | "test";
 
 const root = createRoot(document.getElementById("root") ?? document.body);
-root.render(<OptionsApp />);
+void loadUiLanguagePreference().catch((): UiLanguagePreference => "auto").then((language) => root.render(<OptionsApp initialUiLanguage={language} />));
 
-function OptionsApp(): React.ReactElement {
+function OptionsApp({ initialUiLanguage }: { initialUiLanguage: UiLanguagePreference }): React.ReactElement {
+  const [uiLanguage, setUiLanguage] = React.useState(initialUiLanguage);
   const [settings, setSettings] = React.useState<GhostSettings | null>(null);
   const [savedSettings, setSavedSettings] = React.useState<GhostSettings | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -106,11 +107,14 @@ function OptionsApp(): React.ReactElement {
     { id: "profiles", label: t("profiles"), icon: Layers },
     { id: "sites", label: t("siteRules"), icon: Route },
     { id: "exclusions", label: t("excludedDomains"), icon: Ban }
-  ], []);
+  ], [uiLanguage]);
 
   React.useEffect(() => {
     localizeDocument();
     document.title = t("ghostOptions");
+  }, [uiLanguage]);
+
+  React.useEffect(() => {
     try {
       chrome.runtime.getPlatformInfo((info) => setPlatformInfo(info));
     } catch {
@@ -546,6 +550,26 @@ function OptionsApp(): React.ReactElement {
                     onCheckedChange={(checked) => updateSettings((current) => ({ ...current, enabled: checked }))}
                     aria-label={t("globalProtection")}
                   />
+                </SettingRow>
+                <SettingRow icon={Languages} title={t("uiLanguage")} description={t("uiLanguageSubtitle")}>
+                  <Select
+                    value={uiLanguage}
+                    onValueChange={(value) => {
+                      const language = normalizeUiLanguagePreference(value);
+                      void saveUiLanguagePreference(language)
+                        .then(() => setUiLanguage(language))
+                        .catch((error) => flashToast(errorText(error), "error"));
+                    }}
+                  >
+                    <SelectTrigger className="w-56" aria-label={t("uiLanguage")}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">{t("uiLanguageAuto")}</SelectItem>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="zh-TW">繁體中文</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </SettingRow>
                 <SettingRow icon={AudioLines} title={t("mediaDeviceList")} description={t("mediaDeviceListSubtitle")}>
                   <Switch checked={settings.mediaDeviceListEnabled} onCheckedChange={(checked) => updateSettings((current) => ({ ...current, mediaDeviceListEnabled: checked }))} aria-label={t("mediaDeviceList")} />
