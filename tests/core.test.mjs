@@ -35,7 +35,6 @@ import {
   isAccessiblePageUrl,
   isSupportedPageUrl,
   senderBoundPageUrl,
-  loadSettings,
   normalizeExclusionRule,
   normalizeSettings,
   normalizeSiteRuleKey,
@@ -50,12 +49,10 @@ import {
   resolveProfile,
   sanitizeCanvasFont,
   isExcludedUrl,
-  saveSettings,
   siteKeyFromHostname,
   siteKeyFromUrl,
   stableProfileIdForSite,
   stableSeed,
-  updateSettings,
   userAgentForProfile,
   userAgentMetadataForProfile,
   webgpuAdapterInfoForProfile,
@@ -922,38 +919,6 @@ test("header rules honor temporary disable windows", () => {
     ...DEFAULT_SETTINGS,
     temporaryDisabledUntil: now - 60_000
   }), now), true);
-});
-
-test("settings writes are serialized", async () => {
-  const storage = {};
-  globalThis.chrome = {
-    storage: {
-      local: {
-        async get(key) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          return { [key]: storage[key] };
-        },
-        async set(value) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-          Object.assign(storage, value);
-        }
-      }
-    }
-  };
-
-  await saveSettings(DEFAULT_SETTINGS);
-  await Promise.all([
-    updateSettings((settings) => {
-      settings.siteProfiles["a.example"] = "los-angeles-en-us";
-    }),
-    updateSettings((settings) => {
-      settings.siteProfiles["b.example"] = "tokyo-ja-jp";
-    })
-  ]);
-
-  const settings = await loadSettings();
-  assert.equal(settings.siteProfiles["a.example"], "los-angeles-en-us");
-  assert.equal(settings.siteProfiles["b.example"], "tokyo-ja-jp");
 });
 
 test("helium flag detection maps observed flag effects onto delegation switches", () => {

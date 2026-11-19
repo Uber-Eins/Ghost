@@ -50,17 +50,7 @@ const MAX_GHOST_GLOBAL_RULES = 4500;
 const MAX_GHOST_REGEX_RULES = 900;
 
 let dnrRefreshQueue: Promise<void> = Promise.resolve();
-let globalDnrRefreshQueue: Promise<void> = Promise.resolve();
 const regexValidationCache = new Set<string>();
-
-export function refreshHeaderRules(settings: GhostSettings): Promise<void> {
-  const pending = globalDnrRefreshQueue.then(
-    () => refreshHeaderRulesNow(settings),
-    () => refreshHeaderRulesNow(settings)
-  );
-  globalDnrRefreshQueue = pending.then(() => undefined, () => undefined);
-  return pending;
-}
 
 export function refreshTabHeaderRule(
   tabId: number,
@@ -77,12 +67,10 @@ export function clearTabHeaderRule(tabId: number, isCurrent: () => boolean = () 
   return enqueueDnrUpdate(() => isCurrent() ? clearTabHeaderRuleNow(tabId, isCurrent) : Promise.resolve());
 }
 
-export function clearTabHeaderRules(): Promise<void> {
-  return enqueueDnrUpdate(clearTabHeaderRulesNow);
-}
-
-export async function validateHeaderRules(settings: GhostSettings): Promise<void> {
-  await validateRules(buildRules(settings));
+export async function prepareHeaderRules(settings: GhostSettings): Promise<chrome.declarativeNetRequest.Rule[]> {
+  const rules = buildRules(settings);
+  await validateRules(rules);
+  return rules;
 }
 
 export function buildHeaderRulesForTesting(settings: GhostSettings): chrome.declarativeNetRequest.Rule[] {
@@ -164,22 +152,7 @@ async function clearTabHeaderRuleNow(tabId: number, isCurrent: () => boolean): P
   }
 }
 
-async function clearTabHeaderRulesNow(): Promise<void> {
-  if (!chrome.declarativeNetRequest) {
-    return;
-  }
-
-  const existingRules = await chrome.declarativeNetRequest.getSessionRules();
-  const removeRuleIds = existingRules
-    .map((rule) => rule.id)
-    .filter(isTabRuleId);
-  if (removeRuleIds.length === 0) {
-    return;
-  }
-  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds });
-}
-
-async function refreshHeaderRulesNow(settings: GhostSettings): Promise<void> {
+export async function refreshHeaderRules(addRules: chrome.declarativeNetRequest.Rule[]): Promise<void> {
   if (!chrome.declarativeNetRequest) {
     return;
   }
@@ -190,8 +163,6 @@ async function refreshHeaderRulesNow(settings: GhostSettings): Promise<void> {
     await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: legacyRuleIds });
   }
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-  const addRules = buildRules(settings);
-  await validateRules(addRules);
   const removeRuleIds = new Set(existingRules
     .map((rule) => rule.id)
     .filter(isGlobalRuleId));

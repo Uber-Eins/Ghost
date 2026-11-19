@@ -69,12 +69,9 @@ export {
   DEFAULT_EXCLUDED_DOMAINS,
   DEFAULT_SETTINGS,
   headerRulesAllowed,
-  loadSettings,
   normalizeSettings,
   profileIdForSiteKey,
   profilesFromSettings,
-  resolveProfile,
-  saveSettings,
-  updateSettings
+  resolveProfile
 } from "./shared/storage";
 export type { GhostSettings } from "./shared/types";

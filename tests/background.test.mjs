@@ -150,7 +150,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     }
   };
   const context = vm.createContext({
-    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto, fetch, AbortController,
+    chrome, URL, setTimeout, clearTimeout, Intl, Date, crypto: webcrypto, fetch, AbortController, structuredClone,
     navigator: { userAgent: "Mozilla/5.0 Chrome/152.0.0.0 Safari/537.36" },
     console: { error(...args) { errors.push(args.map(String).join(" ")); } }
   });
@@ -163,6 +163,7 @@ function harness({ blockDebugger = false, blockMessages = false, blockSessionRul
     gateNextGlobalUpdate(pause) { nextDynamicGate = pause; },
     allowUserScripts() { userScriptsAuthorized = true; },
     failNextUserScriptWrite() { failUserScriptWrite = true; },
+    get dynamicRules() { return structuredClone(dynamicRules); },
     get userScripts() { return structuredClone(userScripts); },
     get contentScripts() { return structuredClone(contentScripts); },
     fire(name) { for (const listener of events[name] ?? []) listener(); },
@@ -187,7 +188,7 @@ test("settings save and a subsequent save do not wait for a slow tab debugger", 
     assert.equal(next.ok, true);
     assert.equal(h.local["ghost.settings"].enabled, false);
     assert.equal(h.bootstrap.settings.enabled, false, "the early document payload is updated before success");
-    assert.ok(h.calls.some(call => call.type === "global-headers"), "global headers are applied before success");
+    assert.deepEqual(h.dynamicRules, []);
     await promptly(h.notified);
   } finally {
     h.release();
@@ -438,4 +439,32 @@ test("a location result queues behind a failing save and merges into the rolled-
   assert.equal(h.local["ghost.settings"].enabled, true);
   assert.equal(h.bootstrap.settings.enabled, true);
   assert.equal(h.bootstrap.settings.automaticLocation.timezoneId, "Asia/Taipei");
+});
+
+test("a settings reply waits for its own DNR update and queued edits start from the committed state", async () => {
+  const h = harness();
+  await promptly(h.initialized);
+  assert.ok(h.dynamicRules.some(rule => rule.action.type === "modifyHeaders"));
+  const updating = deferred(), release = deferred();
+  h.gateNextGlobalUpdate(async () => { updating.resolve(); await release.promise; });
+  let replied = false;
+  const disable = h.request({ type: "setGlobalEnabled", enabled: false }).then(result => { replied = true; return result; });
+  try {
+    await promptly(updating.promise);
+    await new Promise(setImmediate);
+    assert.equal(replied, false);
+    assert.ok(h.dynamicRules.some(rule => rule.action.type === "modifyHeaders"));
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await promptly(disable)).ok, true);
+  assert.deepEqual(h.dynamicRules, []);
+  const [a, b] = await promptly(Promise.all([
+    h.request({ type: "setSiteProfile", siteKey: "a.example", profileId: "los-angeles-en-us" }),
+    h.request({ type: "setSiteProfile", siteKey: "b.example", profileId: "tokyo-ja-jp" })
+  ]));
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(h.local["ghost.settings"].siteProfiles["a.example"], "los-angeles-en-us");
+  assert.equal(h.local["ghost.settings"].siteProfiles["b.example"], "tokyo-ja-jp");
 });
