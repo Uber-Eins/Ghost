@@ -326,7 +326,7 @@ test("the production manifest and bundles include the intended permissions and e
   assert.equal(existsSync(new URL("../dist/advanced/page-related.js", import.meta.url)), true);
 
   const enMessages = JSON.parse(readFileSync(new URL("../dist/advanced/_locales/en/messages.json", import.meta.url), "utf8"));
-  const zhMessages = JSON.parse(readFileSync(new URL("../dist/advanced/_locales/zh_CN/messages.json", import.meta.url), "utf8"));
+  const zhMessages = JSON.parse(readFileSync(new URL("../dist/advanced/_locales/zh_TW/messages.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(zhMessages).sort(), Object.keys(enMessages).sort());
 });
 
