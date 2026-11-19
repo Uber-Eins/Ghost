@@ -146,9 +146,9 @@ function realm() {
   run(setup);
   return { context, run };
 }
-function page() {
+function page(overrides = {}) {
   const h = realm();
-  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings, sessionSalt: "native-wrappers" };
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, ...overrides }), sessionSalt: "native-wrappers" };
   h.run(pageMain);
   return h;
 }
@@ -254,10 +254,12 @@ test("Date and Intl constructor proxies preserve native construction, subclassin
   checkConstructors(page());
 });
 
-test("child realms keep native targets and branded getters during parent synchronization", () => {
+test("parent access does not rewrite an already installed child realm", () => {
   const parent = page(), child = page();
+  const installed = child.run("Function.prototype.toString");
   parent.context.child = child.run("globalThis");
   parent.run("new HTMLIFrameElement(child).contentWindow");
+  assert.equal(child.run("Function.prototype.toString"), installed);
   detect(child, 60);
   checkConstructors(child);
   assert.equal(parent.run("screen.width === child.screen.width && navigator.language === child.navigator.language"), true);
@@ -385,4 +387,72 @@ test("geolocation forwards native permission errors, options, and watch lifecycl
   assert.equal(watched, h.run("nativePosition"));
   assert.equal(h.run("id === watchId && typeof watchCallback === 'function'"), true);
   assert.equal(h.run("navigator.geolocation.clearWatch(id); watchCallback"), undefined);
+});
+
+test("protected documents add no visible installer keys and installing twice leaves wrappers alone", () => {
+  const h = realm();
+  const keys = h.run("Reflect.ownKeys(globalThis)");
+  const toStringKeys = h.run("Reflect.ownKeys(Function.prototype.toString)");
+  h.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings };
+  h.run(pageMain);
+  const mask = h.run("Function.prototype.toString");
+  assert.deepEqual(h.run("Reflect.ownKeys(globalThis)"), keys);
+  assert.deepEqual(h.run("Reflect.ownKeys(Function.prototype.toString)"), toStringKeys);
+  h.run(pageMain);
+  assert.equal(h.run("Function.prototype.toString"), mask);
+});
+
+test("excluded documents are untouched even when their protected parent accesses them", () => {
+  const exclusions = { excludedDomains: ["example.com/private"] };
+  const p = page(exclusions), child = realm();
+  const keys = child.run("Reflect.ownKeys(globalThis)");
+  child.run("location.href = 'https://example.com/private/frame'");
+  child.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, ...exclusions }) };
+  child.run(pageMain);
+  p.context.child = child.run("globalThis");
+  p.run("new HTMLIFrameElement(child).contentWindow; new HTMLIFrameElement(child).contentDocument");
+  assert.deepEqual(child.run("Reflect.ownKeys(globalThis)"), keys);
+  assert.equal(child.run("originals.every(o => Object.getOwnPropertyDescriptor(o.owner, o.key)?.[o.slot] === o.fn)"), true);
+  assert.equal(child.run("navigator.language"), "en-US");
+});
+
+test("related bundle keeps native surfaces without a protected parent policy", () => {
+  for (const p of [realm(), page({ enabled: false })]) {
+    const child = realm();
+    child.context.parentRealm = p.run("globalThis");
+    child.run("parent = parentRealm; top = parentRealm; location.href = 'about:blank'; document.referrer = parentRealm.location.href");
+    child.run(pageRelated);
+    assert.equal(child.run("originals.every(o => Object.getOwnPropertyDescriptor(o.owner, o.key)?.[o.slot] === o.fn)"), true);
+  }
+});
+
+test("related bundle inherits its parent's effective policy without adding Ghost noise to delegated measureText", () => {
+  const p = page({ disableCanvasMeasureTextSpoofing: true, disableUserAgentSpoofing: true, disableWebglInfoSpoofing: true });
+  const child = realm();
+  child.context.parentRealm = p.run("globalThis");
+  child.run("parent = parentRealm; top = parentRealm; location.href = 'about:srcdoc'; document.referrer = parentRealm.location.href");
+  child.run(pageRelated);
+  assert.equal(child.run("navigator.language"), "ja-JP");
+  assert.equal(child.run("new CanvasRenderingContext2D().measureText('word').width"), 100);
+  assert.equal(child.run("new WebGLRenderingContext().getParameter(0x9245)"), "native");
+  assert.equal(child.run("navigator.platform"), "Win32");
+});
+
+test("synchronous blank iframe and popup access uses only the protected parent's policy, without reinstalling", () => {
+  const p = realm();
+  const child = realm(), popup = realm();
+  child.context.parent = popup.context.opener = p.run("globalThis");
+  child.run("location.href = 'about:blank'; document.referrer = parent.location.href");
+  popup.run("location.href = 'about:blank'; document.referrer = opener.location.href");
+  p.context.child = child.run("globalThis");
+  p.context.popup = popup.run("globalThis");
+  p.run("var open = new Proxy({ open() { return popup; } }.open, {})");
+  p.context.__GHOST_BOOTSTRAP_SETTINGS__ = { settings: normalizeSettings({ ...settings, disableUserAgentSpoofing: true }) };
+  p.run(pageMain);
+  assert.equal(p.run("new HTMLIFrameElement(child).contentWindow.navigator.language"), "ja-JP");
+  assert.equal(p.run("open('about:blank').navigator.language"), "ja-JP");
+  assert.equal(child.run("navigator.platform"), "Win32");
+  const before = child.run("Function.prototype.toString");
+  child.run(pageRelated);
+  assert.equal(child.run("Function.prototype.toString"), before);
 });

@@ -268,7 +268,7 @@ test("install covers delegated WebGPU and media but leaves excluded profile surf
     h.run(`
       var installedSurfaceOwnership = { profileProtection: ${enabled}, webglInfo: false };
       var callsAtInstall = [];
-      ${["patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchIframeNavigatorAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
+      ${["patchNavigator", "patchSpeechSynthesis", "patchKeyboard", "patchScreen", "patchRelatedWindowAccess", "installTimePatches", "patchGeolocation", "patchFontFaceSet", "patchCanvas", "patchWorkers"].map(name => `function ${name}() { callsAtInstall.push('${name}'); }`).join("\n")}
     `);
     h.run(installCode);
     h.run("install()");

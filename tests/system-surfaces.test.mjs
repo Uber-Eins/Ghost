@@ -230,7 +230,7 @@ test("patchSpeechSynthesis leaves delegated, native-UA, macOS and disabled resul
 
 test("patchSpeechSynthesis mirrors a related parent's public list even when UA values match the host", () => {
   const h = patchHarness();
-  h.run("state.uaSpoofingEnabled = false; parentIdentity = { localVoices: () => voicesForProfile({locale:'ja-JP', languages:['ja-JP']}, 'Win32') }");
+  h.run("state.uaSpoofingEnabled = true; parentIdentity = { localVoices: () => voicesForProfile({locale:'ja-JP', languages:['ja-JP']}, 'Win32') }");
   assert.equal(h.run("speechSynthesis.getVoices()[0].lang"), "ja-JP");
   assert.equal(h.run("Object.getPrototypeOf(speechSynthesis.getVoices()[0]) === SpeechSynthesisVoice.prototype"), true);
   h.run("parentIdentity.localVoices = () => [{name:localVoice.name, lang:localVoice.lang, voiceURI:localVoice.voiceURI, localService:localVoice.localService, default:localVoice.default}]");
