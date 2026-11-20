@@ -419,7 +419,7 @@ test("authorized bootstrap write failure rejects save and preserves the previous
 
 const ipLocation = {
   ip: "203.0.113.231", timezone: "Asia/Taipei", latitude: 25.033, longitude: 121.5654,
-  countryCode: "TW", country: "Taiwan", region: "Taipei", city: "Taipei"
+  country_code: "TW", country: "Taiwan", region: "Taipei", city: "Taipei"
 };
 const locationResponse = () => ({ ok: true, json: async () => ipLocation });
 
@@ -435,7 +435,7 @@ test("enabling automatic location fetches and applies the sanitized cache, which
   assert.equal((await promptly(h.request({ type: "options.saveState", settings: staleOptions }))).ok, true);
   const refreshed = await promptly(h.request({ type: "options.refreshAutomaticLocation" }));
   assert.equal(refreshed.ok, true, refreshed.error);
-  assert.equal(requests[0], "https://my.ippure.com/v1/info");
+  assert.equal(requests[0], "https://api.ip.sb/geoip");
   const saved = await promptly(h.request({
     type: "options.saveState", settings: { ...staleOptions, automaticLocationEnabled: false, advancedEnabled: false }
   }));
