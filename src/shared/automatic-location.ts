@@ -1,7 +1,7 @@
 import { localePresetFor, locationPresetForTimezone, supportedTimezoneIdOrNull } from "./locations";
 import type { AutomaticLanguageMode, AutomaticLocation, Profile } from "./types";
 
-export const IPPURE_INFO_URL = "https://my.ippure.com/v1/info";
+export const IP_SB_GEOIP_URL = "https://api.ip.sb/geoip";
 export const AUTOMATIC_LOCATION_ACCURACY_METERS = 25_000;
 
 const COUNTRY_LOCALES: Readonly<Record<string, string>> = Object.freeze({
@@ -69,7 +69,7 @@ const COUNTRY_LOCALES: Readonly<Record<string, string>> = Object.freeze({
   ZA: "en-ZA"
 });
 
-export function parseIpPureLocation(value: unknown, updatedAt = Date.now()): AutomaticLocation | null {
+export function parseIpSbLocation(value: unknown, updatedAt = Date.now()): AutomaticLocation | null {
   if (typeof value !== "object" || value === null) {
     return null;
   }
@@ -78,7 +78,7 @@ export function parseIpPureLocation(value: unknown, updatedAt = Date.now()): Aut
     timezoneId: response.timezone,
     latitude: response.latitude,
     longitude: response.longitude,
-    countryCode: response.countryCode,
+    countryCode: response.country_code,
     country: response.country,
     region: response.region,
     city: response.city,
